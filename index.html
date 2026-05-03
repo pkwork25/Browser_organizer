@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Nexmark — Your Digital Shelf</title>
+  <link rel="stylesheet" href="css/style.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=Syne:wght@400;600;700;800&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet" />
+</head>
+<body>
+  <!-- SIDEBAR -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-logo">
+      <span class="logo-icon">⬡</span>
+      <span class="logo-text">Nexmark</span>
+    </div>
+
+    <nav class="sidebar-nav">
+      <button class="nav-btn active" data-panel="bookmarks" title="Bookmarks">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+        <span>Bookmarks</span>
+      </button>
+      <button class="nav-btn" data-panel="notes" title="Notes">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+        <span>Notes</span>
+      </button>
+      <button class="nav-btn" data-panel="cloud" title="Cloud Files">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 16 12 12 8 16"/><line x1="12" y1="12" x2="12" y2="21"/><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/></svg>
+        <span>Cloud</span>
+      </button>
+      <button class="nav-btn" data-panel="settings" title="Settings">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        <span>Settings</span>
+      </button>
+    </nav>
+
+    <div class="sidebar-stats">
+      <div class="stat"><span class="stat-num" id="stat-bm">0</span><span class="stat-label">Bookmarks</span></div>
+      <div class="stat"><span class="stat-num" id="stat-notes">0</span><span class="stat-label">Notes</span></div>
+    </div>
+  </aside>
+
+  <!-- MAIN CONTENT -->
+  <main class="main">
+
+    <!-- BOOKMARKS PANEL -->
+    <section class="panel active" id="panel-bookmarks">
+      <header class="panel-header">
+        <div class="panel-title-group">
+          <h1 class="panel-title">Bookmarks</h1>
+          <p class="panel-sub">Your curated web shelf</p>
+        </div>
+        <div class="panel-actions">
+          <div class="search-wrap">
+            <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            <input type="text" id="bm-search" class="search-input" placeholder="Search bookmarks…" />
+          </div>
+          <select id="bm-filter" class="filter-select">
+            <option value="all">All Tags</option>
+          </select>
+          <button class="btn-primary" id="btn-add-bm">+ Add</button>
+        </div>
+      </header>
+
+      <div class="bookmarks-grid" id="bm-grid">
+        <!-- Bookmark cards injected here -->
+      </div>
+      <div class="empty-state" id="bm-empty">
+        <div class="empty-icon">⬡</div>
+        <p>Your shelf is empty.<br/>Add your first bookmark.</p>
+      </div>
+    </section>
+
+    <!-- NOTES PANEL -->
+    <section class="panel" id="panel-notes">
+      <header class="panel-header">
+        <div class="panel-title-group">
+          <h1 class="panel-title">Notes</h1>
+          <p class="panel-sub">Quick thoughts, always at hand</p>
+        </div>
+        <div class="panel-actions">
+          <input type="text" id="notes-search" class="search-input" placeholder="Search notes…" style="width:220px" />
+          <button class="btn-primary" id="btn-add-note">+ New Note</button>
+        </div>
+      </header>
+      <div class="notes-layout">
+        <div class="notes-list" id="notes-list"></div>
+        <div class="note-editor" id="note-editor">
+          <div class="note-editor-placeholder">
+            <span>← Select or create a note</span>
+          </div>
+        </div>
+      </div>
+      <div class="empty-state" id="notes-empty" style="display:none">
+        <div class="empty-icon">✎</div>
+        <p>No notes yet.<br/>Write your first thought.</p>
+      </div>
+    </section>
+
+    <!-- CLOUD PANEL -->
+    <section class="panel" id="panel-cloud">
+      <header class="panel-header">
+        <div class="panel-title-group">
+          <h1 class="panel-title">Cloud Files</h1>
+          <p class="panel-sub">Links to your cloud storage</p>
+        </div>
+        <div class="panel-actions">
+          <button class="btn-primary" id="btn-add-cloud">+ Add Cloud File</button>
+        </div>
+      </header>
+
+      <div class="cloud-services">
+        <div class="service-badge gdrive">
+          <svg viewBox="0 0 87.3 78" xmlns="http://www.w3.org/2000/svg" width="22"><path d="m6.6 66.85 3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3l13.75-23.8h-27.5c0 1.55.4 3.1 1.2 4.5z" fill="#0066da"/><path d="m43.65 25-13.75-23.8c-1.35.8-2.5 1.9-3.3 3.3l-25.4 44a9.06 9.06 0 0 0 -1.2 4.5h27.5z" fill="#00ac47"/><path d="m73.55 76.8c1.35-.8 2.5-1.9 3.3-3.3l1.6-2.75 7.65-13.25c.8-1.4 1.2-2.95 1.2-4.5h-27.502l5.852 11.5z" fill="#ea4335"/><path d="m43.65 25 13.75-23.8c-1.35-.8-2.9-1.2-4.5-1.2h-18.5c-1.6 0-3.15.45-4.5 1.2z" fill="#00832d"/><path d="m59.8 53h-32.3l-13.75 23.8c1.35.8 2.9 1.2 4.5 1.2h50.8c1.6 0 3.15-.45 4.5-1.2z" fill="#2684fc"/><path d="m73.4 26.5-12.7-22c-.8-1.4-1.95-2.5-3.3-3.3l-13.75 23.8 16.15 28h27.45c0-1.55-.4-3.1-1.2-4.5z" fill="#ffba00"/></svg>
+          Google Drive
+        </div>
+        <div class="service-badge mega">
+          <svg viewBox="0 0 24 24" width="20" fill="#d9272e"><path d="M12 0C5.373 0 0 5.373 0 12s5.373 12 12 12 12-5.373 12-12S18.627 0 12 0zm5.5 16.5h-2v-5.5l-3.5 3.5-3.5-3.5v5.5h-2v-9l5.5 5.5 5.5-5.5v9z"/></svg>
+          MEGA
+        </div>
+        <div class="service-badge dropbox">
+          <svg viewBox="0 0 24 24" width="20" fill="#0061fe"><path d="M12 14.56l-5.04-3.13L2 14.56l5.04 3.13L12 14.56zm0 0l5.04 3.13L22 14.56l-5.04-3.13L12 14.56zM2 8.57l5.04 3.13L12 8.57 6.96 5.44 2 8.57zm15.96 3.13L22 8.57l-4.96-3.13L12 8.57l5.04 3.13zM7.04 18.01L12 21.14l4.96-3.13-4.96-3.13-4.96 3.13z"/></svg>
+          Dropbox
+        </div>
+        <div class="service-badge onedrive">
+          <svg viewBox="0 0 24 24" width="20" fill="#0078D4"><path d="M10.5 12.5c.8-2.1 2.8-3.5 5-3.5.7 0 1.4.1 2 .4-.6-2.7-3-4.7-5.9-4.7-2.5 0-4.7 1.5-5.7 3.8-.4-.1-.8-.1-1.2-.1C2.4 8.4 0 10.8 0 13.7c0 2.8 2.3 5.1 5.1 5.1h13.6c2.3 0 4.2-1.9 4.2-4.2 0-2.2-1.7-4-3.9-4.2-.4 2.4-2.5 4.2-5 4.2-1.6 0-3-.7-3.9-1.9l.4-.2z"/></svg>
+          OneDrive
+        </div>
+      </div>
+
+      <div class="cloud-grid" id="cloud-grid"></div>
+      <div class="empty-state" id="cloud-empty">
+        <div class="empty-icon">☁</div>
+        <p>No cloud files linked yet.<br/>Add Google Drive, MEGA, Dropbox links.</p>
+      </div>
+    </section>
+
+    <!-- SETTINGS PANEL -->
+    <section class="panel" id="panel-settings">
+      <header class="panel-header">
+        <div class="panel-title-group">
+          <h1 class="panel-title">Settings</h1>
+          <p class="panel-sub">Customize your workspace</p>
+        </div>
+      </header>
+      <div class="settings-grid">
+        <div class="settings-card">
+          <h3>Appearance</h3>
+          <label class="setting-row">
+            <span>Theme</span>
+            <div class="toggle-group">
+              <button class="toggle-btn active" id="theme-dark" onclick="setTheme('dark')">Dark</button>
+              <button class="toggle-btn" id="theme-light" onclick="setTheme('light')">Light</button>
+            </div>
+          </label>
+          <label class="setting-row">
+            <span>Accent Color</span>
+            <div class="color-swatches" id="accent-swatches"></div>
+          </label>
+        </div>
+        <div class="settings-card">
+          <h3>Data Management</h3>
+          <p class="settings-desc">All data is stored locally in your browser (localStorage). Export to keep a backup.</p>
+          <div class="settings-btns">
+            <button class="btn-outline" onclick="exportData()">Export JSON</button>
+            <button class="btn-outline" onclick="document.getElementById('import-file').click()">Import JSON</button>
+            <input type="file" id="import-file" accept=".json" style="display:none" onchange="importData(event)" />
+          </div>
+        </div>
+        <div class="settings-card">
+          <h3>Cloud Drive Integration</h3>
+          <p class="settings-desc">Connect your Google Drive to browse and link files directly. Requires OAuth consent.</p>
+          <button class="btn-primary" onclick="connectGDrive()">Connect Google Drive</button>
+          <p class="settings-note" id="gdrive-status">Not connected</p>
+        </div>
+        <div class="settings-card danger-card">
+          <h3>Danger Zone</h3>
+          <p class="settings-desc">Permanently delete all bookmarks, notes, and cloud links from this browser.</p>
+          <button class="btn-danger" onclick="clearAllData()">Clear All Data</button>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- MODAL: Add/Edit Bookmark -->
+  <div class="modal-overlay" id="bm-modal">
+    <div class="modal">
+      <div class="modal-header">
+        <h2 id="bm-modal-title">Add Bookmark</h2>
+        <button class="modal-close" onclick="closeModal('bm-modal')">✕</button>
+      </div>
+      <div class="modal-body">
+        <label>URL <span class="req">*</span></label>
+        <input type="url" id="bm-url" placeholder="https://example.com" />
+        <label>Title</label>
+        <input type="text" id="bm-title" placeholder="Auto-fetched or enter manually" />
+        <label>Description</label>
+        <textarea id="bm-desc" rows="2" placeholder="Optional note about this link…"></textarea>
+        <label>Tags <span class="hint">(comma separated)</span></label>
+        <input type="text" id="bm-tags" placeholder="design, tools, reading" />
+        <label>Favicon URL <span class="hint">(optional override)</span></label>
+        <input type="url" id="bm-favicon" placeholder="Auto-detected" />
+      </div>
+      <div class="modal-footer">
+        <button class="btn-outline" onclick="closeModal('bm-modal')">Cancel</button>
+        <button class="btn-primary" onclick="saveBookmark()">Save Bookmark</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: Add Cloud File -->
+  <div class="modal-overlay" id="cloud-modal">
+    <div class="modal">
+      <div class="modal-header">
+        <h2>Add Cloud File Link</h2>
+        <button class="modal-close" onclick="closeModal('cloud-modal')">✕</button>
+      </div>
+      <div class="modal-body">
+        <label>Cloud Service</label>
+        <select id="cloud-service">
+          <option value="gdrive">Google Drive</option>
+          <option value="mega">MEGA</option>
+          <option value="dropbox">Dropbox</option>
+          <option value="onedrive">OneDrive</option>
+          <option value="other">Other</option>
+        </select>
+        <label>File / Folder URL <span class="req">*</span></label>
+        <input type="url" id="cloud-url" placeholder="Paste the share link" />
+        <label>Name <span class="req">*</span></label>
+        <input type="text" id="cloud-name" placeholder="Project Assets, Resume, etc." />
+        <label>File Type</label>
+        <select id="cloud-type">
+          <option value="folder">📁 Folder</option>
+          <option value="doc">📄 Document</option>
+          <option value="sheet">📊 Spreadsheet</option>
+          <option value="slide">📑 Presentation</option>
+          <option value="image">🖼 Image / Media</option>
+          <option value="pdf">📕 PDF</option>
+          <option value="other">📎 Other</option>
+        </select>
+        <label>Description</label>
+        <textarea id="cloud-desc" rows="2" placeholder="Optional description…"></textarea>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-outline" onclick="closeModal('cloud-modal')">Cancel</button>
+        <button class="btn-primary" onclick="saveCloudFile()">Save File</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- TOAST -->
+  <div class="toast" id="toast"></div>
+
+  <script src="js/app.js"></script>
+</body>
+</html>
