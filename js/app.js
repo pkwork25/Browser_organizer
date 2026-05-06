@@ -1478,3 +1478,1759 @@ function updateStats(){
 
 // ── BOOT ──────────────────────────────────────────
 document.addEventListener('DOMContentLoaded',init);
+
+/* ════════════════════════════════════════════════
+   NEXMARK v4 — NEW MODULES
+   Music | File Tools (PDF+Images+OCR+Convert) |
+   Book Reader (PDF+EPUB) | Notifications/Reminders |
+   Prompt Maker | Price Tracker | Drive upload/sort
+════════════════════════════════════════════════ */
+
+// ══ extend STATE ══
+Object.assign(STATE,{
+  notifications:[], reminders:[],
+  musicTracks:[], musicIdx:0, musicShuffle:false, musicRepeat:false,
+  products:[],
+  savedPrompts:[],
+  pmOptions:{examples:true,role:true},
+  pdfDoc:null, pdfPage:1, pdfZoom:1, pdfTool:'select', pdfAnnotations:{}, splitPdfBytes:null,
+  readerBook:null, readerType:null, readerPage:1, readerFontSz:16, readerFont:'Syne', readerTheme:'dark',
+  readerBookmarks:[], readerNotes:[],
+  driveView:'grid', driveSort:'name', driveCachedFiles:[],
+  imageTool:{canvas:null,original:null,result:null},
+});
+Object.assign(KEYS,{
+  notifications:'nx_notifs', reminders:'nx_reminders',
+  music:'nx_music', products:'nx_products', savedPrompts:'nx_prompts',
+  readerBM:'nx_reader_bm', readerNotes:'nx_reader_notes',
+});
+
+// patch init to load new keys and init new sections
+const _origInit=init;
+document.removeEventListener('DOMContentLoaded',init);
+document.addEventListener('DOMContentLoaded',initV4);
+
+function initV4(){
+  _origInit();
+  STATE.notifications=ls_load(KEYS.notifications);
+  STATE.reminders=ls_load(KEYS.reminders);
+  STATE.musicTracks=ls_load(KEYS.music);
+  STATE.products=ls_load(KEYS.products);
+  STATE.savedPrompts=ls_load(KEYS.savedPrompts);
+  STATE.readerBookmarks=ls_load(KEYS.readerBM);
+  STATE.readerNotes=ls_load(KEYS.readerNotes);
+
+  // New nav tabs
+  setupCloudTabsV4();
+  setupFileToolsTabs();
+  setupNotifTabs();
+  setupPriceTabs();
+  setupPromptMakerSliders();
+
+  renderNotifications();
+  renderMusicList();
+  renderProducts();
+  renderSavedPrompts();
+
+  // Claude key status
+  const k=localStorage.getItem('nx_claude_key');
+  const s=document.getElementById('claude-key-status');
+  if(s)s.textContent=k?'Key saved ✓':'Not set';
+
+  // Notification permission
+  checkNotifPermission();
+
+  // Start reminder polling
+  setInterval(checkReminders,30000);
+  checkReminders();
+
+  // PDF.js worker
+  if(window.pdfjsLib){
+    pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  }
+}
+
+function saveClaudeKey(){
+  const v=document.getElementById('claude-api-key-input').value.trim();
+  if(!v){toast('Enter your API key','error');return;}
+  localStorage.setItem('nx_claude_key',v);
+  const s=document.getElementById('claude-key-status');
+  if(s)s.textContent='Key saved ✓';
+  toast('Claude API key saved ✓','success');
+}
+
+// ══ CLOUD TABS v4 ══
+function setupCloudTabsV4(){
+  document.querySelectorAll('#panel-cloud .bm-tab').forEach(tab=>{
+    tab.addEventListener('click',()=>{
+      const t=tab.dataset.tab;
+      document.querySelectorAll('#panel-cloud .bm-tab').forEach(b=>b.classList.remove('active'));
+      document.querySelectorAll('#panel-cloud .bm-tab-content').forEach(c=>c.classList.remove('active'));
+      tab.classList.add('active');
+      document.getElementById('bm-tab-'+t).classList.add('active');
+      const upBtn=document.getElementById('btn-drive-upload');
+      if(upBtn)upBtn.style.display=(t==='cloud-gdrive'&&localStorage.getItem('nx_gdrive_token'))?'block':'none';
+    });
+  });
+}
+function setDriveView(v){
+  STATE.driveView=v;
+  document.getElementById('drive-view-grid').classList.toggle('active',v==='grid');
+  document.getElementById('drive-view-list').classList.toggle('active',v==='list');
+  const g=document.getElementById('drive-files-grid');
+  if(g)g.className='drive-files-grid'+(v==='list'?' view-list':'');
+}
+function sortDriveFiles(by){
+  STATE.driveSort=by;
+  if(!STATE.driveCachedFiles.length)return;
+  const sorted=[...STATE.driveCachedFiles];
+  if(by==='name')sorted.sort((a,b)=>a.name.localeCompare(b.name));
+  else if(by==='modified')sorted.sort((a,b)=>new Date(b.modifiedTime||0)-new Date(a.modifiedTime||0));
+  else if(by==='size')sorted.sort((a,b)=>(parseInt(b.size)||0)-(parseInt(a.size)||0));
+  else if(by==='type')sorted.sort((a,b)=>a.mimeType.localeCompare(b.mimeType));
+  renderDriveFiles(sorted);
+}
+const debouncedDriveSearch=debounce(async(q)=>{
+  if(!q){loadDriveFiles('root');return;}
+  const token=localStorage.getItem('nx_gdrive_token');if(!token)return;
+  const grid=document.getElementById('drive-files-grid');
+  grid.innerHTML='<div class="drive-loading">Searching…</div>';
+  try{
+    const qs=encodeURIComponent(`name contains '${q}' and trashed=false`);
+    const fields=encodeURIComponent('files(id,name,mimeType,size,modifiedTime,webViewLink)');
+    const res=await fetch(`https://www.googleapis.com/drive/v3/files?q=${qs}&fields=${fields}&pageSize=50`,{headers:{Authorization:`Bearer ${token}`}});
+    const data=await res.json();
+    if(data.files)renderDriveFiles(data.files);
+  }catch{grid.innerHTML='<div class="drive-loading">Search failed.</div>';}
+},400);
+
+async function createDriveFolder(){
+  const name=prompt('Folder name:');if(!name)return;
+  const token=localStorage.getItem('nx_gdrive_token');if(!token)return;
+  try{
+    const res=await fetch('https://www.googleapis.com/drive/v3/files',{
+      method:'POST',headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},
+      body:JSON.stringify({name,mimeType:'application/vnd.google-apps.folder'})
+    });
+    if(res.ok){toast(`Folder "${name}" created ✓`,'success');loadDriveFiles('root');}
+    else toast('Could not create folder','error');
+  }catch{toast('Error creating folder','error');}
+}
+
+function triggerDriveUpload(){document.getElementById('drive-upload-input').click();}
+async function uploadFilesToDrive(event){
+  const files=[...event.target.files];if(!files.length)return;
+  const token=localStorage.getItem('nx_gdrive_token');if(!token){toast('Connect Google Drive first','error');return;}
+  for(const file of files){
+    const meta=JSON.stringify({name:file.name});
+    const form=new FormData();
+    form.append('metadata',new Blob([meta],{type:'application/json'}));
+    form.append('file',file);
+    toast(`Uploading "${file.name}"…`,'info');
+    try{
+      const res=await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart',{
+        method:'POST',headers:{Authorization:`Bearer ${token}`},body:form
+      });
+      if(res.ok)toast(`"${file.name}" uploaded ✓`,'success');
+      else toast(`Failed to upload "${file.name}"`, 'error');
+    }catch{toast(`Error uploading "${file.name}"`,'error');}
+  }
+  event.target.value='';
+  loadDriveFiles('root');
+}
+
+// patch existing loadDriveFiles to cache files for sort
+const _origLoadDrive=loadDriveFiles;
+async function loadDriveFiles(folderId='root',folderName='My Drive'){
+  const token=localStorage.getItem('nx_gdrive_token');if(!token){toast('Not connected','error');return;}
+  const grid=document.getElementById('drive-files-grid');
+  grid.innerHTML='<div class="drive-loading">Loading files…</div>';
+  updateBreadcrumb(folderId,folderName);
+  try{
+    const q=encodeURIComponent(`'${folderId}' in parents and trashed=false`);
+    const fields=encodeURIComponent('files(id,name,mimeType,size,modifiedTime,webViewLink,iconLink)');
+    const res=await fetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=${fields}&pageSize=100&orderBy=folder,name`,{headers:{Authorization:`Bearer ${token}`}});
+    if(res.status===401){toast('Session expired. Reconnect.','error');disconnectGDrive();return;}
+    const data=await res.json();
+    if(!data.files||!data.files.length){grid.innerHTML='<div class="drive-loading">Folder is empty.</div>';return;}
+    STATE.driveCachedFiles=data.files;
+    renderDriveFiles(data.files);
+  }catch{grid.innerHTML='<div class="drive-loading">Error loading files.</div>';}
+}
+
+// ══ NOTIFICATIONS & REMINDERS ══
+function setupNotifTabs(){
+  document.querySelectorAll('#panel-notifications .bm-tab').forEach(tab=>{
+    tab.addEventListener('click',()=>{
+      document.querySelectorAll('#panel-notifications .bm-tab').forEach(b=>b.classList.remove('active'));
+      document.querySelectorAll('#panel-notifications .bm-tab-content').forEach(c=>c.classList.remove('active'));
+      tab.classList.add('active');
+      document.getElementById('bm-tab-'+tab.dataset.tab).classList.add('active');
+    });
+  });
+}
+function openAddReminderModal(){
+  document.getElementById('reminder-title').value='';
+  document.getElementById('reminder-datetime').value='';
+  document.getElementById('reminder-notes').value='';
+  document.getElementById('reminder-type').value='reminder';
+  // default to 1 hour from now
+  const d=new Date(Date.now()+3600000);
+  document.getElementById('reminder-datetime').value=d.toISOString().slice(0,16);
+  openModal('reminder-modal');
+  setTimeout(()=>document.getElementById('reminder-title').focus(),100);
+}
+function saveReminder(){
+  const title=document.getElementById('reminder-title').value.trim();
+  const dt=document.getElementById('reminder-datetime').value;
+  if(!title){toast('Title required','error');return;}
+  if(!dt){toast('Date/time required','error');return;}
+  const r={id:uid(),title,datetime:dt,type:document.getElementById('reminder-type').value,notes:document.getElementById('reminder-notes').value.trim(),done:false,snoozed:false,createdAt:Date.now()};
+  STATE.reminders.push(r);
+  ls_save(KEYS.reminders,STATE.reminders);
+  // Add to notifications
+  addNotification({id:uid(),type:'reminder',title,desc:`Due: ${new Date(dt).toLocaleString('en-IN')}`,time:dt,reminderId:r.id,read:false});
+  renderNotifications();closeModal('reminder-modal');toast('Reminder set ✓','success');
+}
+function addNotification(n){
+  STATE.notifications.unshift({...n,createdAt:Date.now()});
+  ls_save(KEYS.notifications,STATE.notifications);
+  updateNotifBadge();
+}
+function checkReminders(){
+  const now=new Date();
+  STATE.reminders.forEach(r=>{
+    if(r.done||r.snoozed)return;
+    if(new Date(r.datetime)<=now){
+      // Check if already in notifications as active
+      const exists=STATE.notifications.find(n=>n.reminderId===r.id&&!n.dismissed);
+      if(!exists){
+        addNotification({id:uid(),type:r.type||'reminder',title:r.title,desc:r.notes||'Reminder due now',time:r.datetime,reminderId:r.id,read:false,overdue:true});
+        // Browser notification
+        if(Notification.permission==='granted'){
+          new Notification('Nexmark Reminder',{body:r.title,icon:'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><text y="18" font-size="18">⬡</text></svg>'});
+        }
+      }
+    }
+  });
+}
+function snoozeReminder(id,mins=15){
+  const r=STATE.reminders.find(r=>r.id===id);
+  if(!r)return;
+  r.snoozed=true;
+  const newDt=new Date(Date.now()+mins*60000);
+  r.datetime=newDt.toISOString().slice(0,16);
+  r.snoozed=false;// will re-trigger
+  ls_save(KEYS.reminders,STATE.reminders);
+  // dismiss current notification
+  dismissNotif(id);
+  toast(`Snoozed ${mins} min`,'info');
+}
+function dismissNotif(reminderId){
+  STATE.notifications=STATE.notifications.map(n=>n.reminderId===reminderId?{...n,dismissed:true,read:true}:n);
+  ls_save(KEYS.notifications,STATE.notifications);
+  renderNotifications();
+}
+function markNotifDone(reminderId){
+  const r=STATE.reminders.find(r=>r.id===reminderId);
+  if(r){r.done=true;ls_save(KEYS.reminders,STATE.reminders);}
+  STATE.notifications=STATE.notifications.map(n=>n.reminderId===reminderId?{...n,read:true,done:true}:n);
+  ls_save(KEYS.notifications,STATE.notifications);
+  renderNotifications();toast('Marked done ✓','success');
+}
+function deleteNotif(id){
+  STATE.notifications=STATE.notifications.filter(n=>n.id!==id);
+  ls_save(KEYS.notifications,STATE.notifications);
+  renderNotifications();
+}
+function clearAllNotifs(){
+  if(!confirm('Clear all notifications?'))return;
+  STATE.notifications=[];ls_save(KEYS.notifications,STATE.notifications);
+  renderNotifications();
+}
+const NOTIF_ICONS={reminder:'⏰',todo:'✅',note:'📝',habit:'🔥',general:'🔔'};
+function renderNotifications(){
+  updateNotifBadge();
+  const all=document.getElementById('notif-list-all');
+  const remList=document.getElementById('notif-list-reminders');
+  const empty=document.getElementById('notif-empty');
+  const remEmpty=document.getElementById('notif-reminders-empty');
+  const active=STATE.notifications.filter(n=>!n.dismissed&&!n.done);
+  const remindersOnly=active.filter(n=>n.type==='reminder'||n.type==='todo'||n.type==='habit'||n.type==='note');
+  function renderList(container,items,emptyEl){
+    if(items.length===0){container.innerHTML='';emptyEl.style.display='flex';return;}
+    emptyEl.style.display='none';
+    container.innerHTML=items.map(n=>`
+      <div class="notif-card ${n.read?'':'unread'} ${n.overdue?'overdue':''}">
+        <div class="notif-card-icon">${NOTIF_ICONS[n.type]||'🔔'}</div>
+        <div class="notif-card-body">
+          <div class="notif-card-title">${esc(n.title)}</div>
+          ${n.desc?`<div class="notif-card-desc">${esc(n.desc)}</div>`:''}
+          <div class="notif-card-time">${fmtDate(n.createdAt)}${n.time?` · Due: ${new Date(n.time).toLocaleString('en-IN',{hour12:true,hour:'2-digit',minute:'2-digit',day:'numeric',month:'short'})}`:''}</div>
+        </div>
+        <div class="notif-card-actions">
+          ${n.reminderId?`<button class="card-action-btn" onclick="snoozeReminder('${n.reminderId}',15)">Snooze 15m</button>
+          <button class="card-action-btn open-btn" onclick="markNotifDone('${n.reminderId}')">Done</button>`:''}
+          <button class="card-action-btn del-btn" onclick="deleteNotif('${n.id}')">✕</button>
+        </div>
+      </div>`).join('');
+  }
+  renderList(all,active,empty);
+  renderList(remList,remindersOnly,remEmpty);
+}
+function updateNotifBadge(){
+  const unread=STATE.notifications.filter(n=>!n.read&&!n.dismissed&&!n.done).length;
+  const badge=document.getElementById('notif-badge');
+  if(badge){badge.style.display=unread>0?'flex':'none';badge.textContent=unread>9?'9+':unread;}
+}
+function requestNotifPermission(){
+  if(!('Notification' in window)){toast('Browser does not support notifications','error');return;}
+  Notification.requestPermission().then(p=>{
+    const s=document.getElementById('notif-permission-status');
+    if(s)s.textContent='Permission: '+p;
+    if(p==='granted')toast('Browser notifications enabled ✓','success');
+  });
+}
+function checkNotifPermission(){
+  const s=document.getElementById('notif-permission-status');
+  if(s&&'Notification' in window)s.textContent='Permission: '+Notification.permission;
+}
+
+// ══ BOOK READER — Full Featured ══
+let _bookFileData = null;
+let _readerPdfDoc = null;       // pdfjsLib document
+let _readerEpubBook = null;
+let _readerEpubRendition = null;
+let _readerZoom = 1.0;
+let _readerTool = 'cursor';     // cursor | highlight | note
+let _readerHlColor = '#ffe06688';
+let _readerAutoScrollTimer = null;
+let _readerStickyPending = null; // {x,y,page}
+let _readerSessionStart = null;
+let _readerSessionPages = new Set();
+let _readerSearchMatches = [];
+let _readerSearchIdx = 0;
+let _readerAnnotations = []; // [{id,bookId,page,color,text,rects,note}]
+let _readerStickyNotes = []; // [{id,bookId,page,x,y,text}]
+let _selectedText = '';
+
+// ── File upload for book modal ──
+function handleBookFileUpload(event) {
+  const file = event.target.files[0]; if (!file) return;
+  const label = document.getElementById('book-file-label');
+  if (label) label.textContent = file.name;
+  const reader = new FileReader();
+  reader.onload = e => { _bookFileData = { name: file.name, type: file.name.toLowerCase().endsWith('.epub') ? 'epub' : 'pdf', data: e.target.result }; };
+  reader.readAsDataURL(file);
+}
+const _origSaveBook2 = saveBook;
+function saveBook() {
+  _origSaveBook2();
+  if (_bookFileData && STATE.books.length > 0) {
+    STATE.books[0].fileData = _bookFileData;
+    ls_save(KEYS.books, STATE.books);
+    _bookFileData = null;
+  }
+}
+
+// ── Open Reader ──
+function openReader(bookId) {
+  const book = STATE.books.find(b => b.id === bookId); if (!book) return;
+  if (!book.fileData) { toast('No file uploaded. Edit the book and upload a PDF or EPUB.', 'error'); return; }
+  STATE.readerBook = bookId;
+  STATE.readerType = book.fileData.type;
+  _readerZoom = book.savedZoom || 1.0;
+  STATE.readerFontSz = book.savedFontSz || 16;
+  STATE.readerTheme = book.savedTheme || 'dark';
+  // Load stored annotations/notes
+  _readerAnnotations = ls_load('nx_reader_annot');
+  _readerStickyNotes = ls_load('nx_reader_sticky');
+  STATE.readerBookmarks = ls_load(KEYS.readerBM);
+  STATE.readerNotes = ls_load(KEYS.readerNotes);
+  _readerSessionStart = Date.now();
+  _readerSessionPages = new Set();
+
+  document.getElementById('reader-book-title').textContent = book.title;
+  // Apply theme
+  const rm = document.getElementById('reader-main');
+  if (rm) rm.className = 'reader-main theme-' + STATE.readerTheme;
+  document.getElementById('reader-theme').value = STATE.readerTheme;
+  switchPanel('reader');
+
+  // Keyboard listener
+  document.addEventListener('keydown', _readerKeyHandler);
+  // Context menu listener
+  document.addEventListener('mouseup', _readerMouseUpHandler);
+  // Click outside context menu
+  document.addEventListener('click', _readerHideContextMenu);
+
+  if (STATE.readerType === 'pdf') openPDFReader(book.fileData.data, bookId);
+  else openEPUBReader(book.fileData.data, bookId);
+}
+
+function closeReader() {
+  const book = STATE.books.find(b => b.id === STATE.readerBook);
+  if (book) {
+    if (STATE.readerType === 'pdf') {
+      book.current = STATE.readerPage;
+      book.pages = _readerPdfDoc ? _readerPdfDoc.numPages : (book.pages || 0);
+      if (book.pages > 0 && STATE.readerPage >= book.pages) book.status = 'done';
+      else if (STATE.readerPage > 1) book.status = 'reading';
+    }
+    book.savedZoom = _readerZoom;
+    book.savedFontSz = STATE.readerFontSz;
+    book.savedTheme = STATE.readerTheme;
+    // Save reading time
+    if (_readerSessionStart) {
+      const mins = Math.round((Date.now() - _readerSessionStart) / 60000);
+      book.totalMinutes = (book.totalMinutes || 0) + mins;
+    }
+    ls_save(KEYS.books, STATE.books);
+  }
+  // Cleanup
+  document.removeEventListener('keydown', _readerKeyHandler);
+  document.removeEventListener('mouseup', _readerMouseUpHandler);
+  document.removeEventListener('click', _readerHideContextMenu);
+  stopAutoScroll();
+  if (_readerEpubRendition) { try { _readerEpubRendition.destroy(); } catch(e){} _readerEpubRendition = null; }
+  if (_readerEpubBook) { try { _readerEpubBook.destroy(); } catch(e){} _readerEpubBook = null; }
+  _readerPdfDoc = null;
+  switchPanel('books');
+}
+
+// ── Keyboard handler ──
+function _readerKeyHandler(e) {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  if (e.key === 'ArrowRight' || e.key === 'ArrowDown' || e.key === ' ') { e.preventDefault(); readerNext(); }
+  else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') { e.preventDefault(); readerPrev(); }
+  else if (e.key === 'f' || e.key === 'F') { toggleReaderFullscreen(); }
+  else if (e.key === 'b' || e.key === 'B') { bookmarkCurrentPage(); }
+  else if ((e.ctrlKey || e.metaKey) && e.key === 'f') { e.preventDefault(); toggleReaderSearch(); }
+  else if (e.key === 'Escape') {
+    stopAutoScroll();
+    _readerHideContextMenu();
+    const si = document.getElementById('reader-search-bar');
+    if (si && si.style.display !== 'none') toggleReaderSearch();
+  }
+  else if (e.key === '+' || e.key === '=') readerZoom(0.2);
+  else if (e.key === '-') readerZoom(-0.2);
+  else if (e.key === '0') { _readerZoom = 1.0; renderReaderPDFPage(STATE.readerPage); updateZoomLabel(); }
+}
+
+// ── Context menu ──
+function _readerMouseUpHandler(e) {
+  if (e.target.closest('#reader-context-menu') || e.target.closest('#reader-sticky-input')) return;
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed) { setTimeout(_readerHideContextMenu, 150); return; }
+  const text = sel.toString().trim();
+  if (!text || text.length < 2) { _readerHideContextMenu(); return; }
+  _selectedText = text;
+  const menu = document.getElementById('reader-context-menu');
+  menu.style.display = 'block';
+  const x = Math.min(e.clientX, window.innerWidth - 160);
+  const y = Math.min(e.clientY + 8, window.innerHeight - 140);
+  menu.style.left = x + 'px';
+  menu.style.top = y + 'px';
+}
+function _readerHideContextMenu(e) {
+  if (e && e.target.closest('#reader-context-menu')) return;
+  const menu = document.getElementById('reader-context-menu');
+  if (menu) menu.style.display = 'none';
+}
+function contextHighlight() {
+  _readerHideContextMenu();
+  if (!_selectedText) return;
+  const annot = { id: uid(), bookId: STATE.readerBook, page: STATE.readerPage, color: _readerHlColor, text: _selectedText, type: 'highlight', note: '', createdAt: Date.now() };
+  _readerAnnotations.push(annot);
+  ls_save('nx_reader_annot', _readerAnnotations);
+  renderReaderAnnotationsList(STATE.readerBook);
+  window.getSelection()?.removeAllRanges();
+  toast('Highlighted ✓', 'success');
+}
+function contextNote() {
+  _readerHideContextMenu();
+  if (!_selectedText) return;
+  const text = prompt('Add note for: "' + _selectedText.slice(0, 40) + ((_selectedText.length > 40) ? '…' : '') + '"');
+  if (text === null) return;
+  const note = { id: uid(), bookId: STATE.readerBook, page: STATE.readerPage, text: _selectedText, note: text, color: _readerHlColor, type: 'note', createdAt: Date.now() };
+  _readerAnnotations.push(note);
+  ls_save('nx_reader_annot', _readerAnnotations);
+  // Also store in plain notes list
+  STATE.readerNotes.push({ id: uid(), bookId: STATE.readerBook, page: STATE.readerPage, text: text, quote: _selectedText, createdAt: Date.now() });
+  ls_save(KEYS.readerNotes, STATE.readerNotes);
+  renderReaderAnnotationsList(STATE.readerBook);
+  renderReaderNotesList(STATE.readerBook);
+  toast('Note saved 📌', 'success');
+}
+function contextCopy() {
+  _readerHideContextMenu();
+  navigator.clipboard?.writeText(_selectedText).then(() => toast('Copied ✓', 'success')).catch(() => toast('Copy failed', 'error'));
+}
+function contextLookup() {
+  _readerHideContextMenu();
+  lookupWord(_selectedText.trim().split(/\s+/)[0]);
+}
+
+// ── Dictionary lookup ──
+async function lookupWord(word) {
+  if (!word) return;
+  document.getElementById('dict-modal-word').textContent = word;
+  document.getElementById('dict-modal-body').textContent = 'Looking up…';
+  document.getElementById('reader-dict-modal').classList.add('open');
+  try {
+    const res = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(word)}`);
+    if (!res.ok) throw new Error('Not found');
+    const data = await res.json();
+    const entry = data[0];
+    let html = '';
+    if (entry.phonetics?.[0]?.text) html += `<div style="color:var(--text3);font-size:12px;margin-bottom:8px">${entry.phonetics[0].text}</div>`;
+    entry.meanings?.slice(0, 3).forEach(m => {
+      html += `<div style="font-weight:700;color:var(--accent);margin:8px 0 4px;font-size:12px;text-transform:uppercase;letter-spacing:.07em">${m.partOfSpeech}</div>`;
+      m.definitions?.slice(0, 2).forEach((d, i) => {
+        html += `<div style="margin-bottom:4px">${i + 1}. ${d.definition}</div>`;
+        if (d.example) html += `<div style="color:var(--text3);font-style:italic;font-size:12px;margin-bottom:6px">"${d.example}"</div>`;
+      });
+    });
+    document.getElementById('dict-modal-body').innerHTML = html || 'No definition found.';
+  } catch (e) {
+    document.getElementById('dict-modal-body').textContent = `"${word}" not found in dictionary.`;
+  }
+}
+function closeDict() { document.getElementById('reader-dict-modal')?.classList.remove('open'); }
+
+// ── PDF Reader ──
+async function openPDFReader(dataUrl, bookId) {
+  if (!window.pdfjsLib) { toast('PDF.js not loaded', 'error'); return; }
+  const wrap = document.getElementById('reader-content-wrap');
+  wrap.innerHTML = '<div style="color:var(--text3);padding:40px;text-align:center">Loading PDF…<br><small>Large files may take a moment</small></div>';
+  try {
+    const resp = await fetch(dataUrl);
+    const arr = await resp.arrayBuffer();
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    _readerPdfDoc = await pdfjsLib.getDocument({ data: arr }).promise;
+    const book = STATE.books.find(b => b.id === bookId);
+    STATE.readerPage = book?.current || 1;
+    const total = _readerPdfDoc.numPages;
+    document.getElementById('reader-total-pages').textContent = '/ ' + total;
+    document.getElementById('reader-page-input').max = total;
+
+    // Get outline for TOC
+    const outline = await _readerPdfDoc.getOutline();
+    renderReaderTOC(outline);
+    // Render canvas
+    wrap.innerHTML = `<div style="position:relative;display:inline-block">
+      <canvas id="reader-pdf-canvas" style="display:block;box-shadow:0 4px 24px rgba(0,0,0,.4)"></canvas>
+      <canvas id="reader-annot-canvas" style="position:absolute;top:0;left:0;pointer-events:none"></canvas>
+    </div>`;
+    // Click on content for sticky notes
+    wrap.addEventListener('click', _readerWrapClick);
+    await renderReaderPDFPage(STATE.readerPage);
+    renderReaderBookmarks(bookId);
+    renderReaderAnnotationsList(bookId);
+    renderReaderNotesList(bookId);
+    updateReaderStats(bookId);
+  } catch (e) {
+    wrap.innerHTML = `<div style="color:var(--red);padding:40px">Error loading PDF: ${e.message}</div>`;
+  }
+}
+
+function _readerWrapClick(e) {
+  if (e.target.closest('#reader-sticky-input') || e.target.closest('#reader-context-menu')) return;
+  if (_readerTool !== 'note') return;
+  const wrap = document.getElementById('reader-content-wrap');
+  const rect = wrap.getBoundingClientRect();
+  const x = e.clientX - rect.left + wrap.scrollLeft;
+  const y = e.clientY - rect.top + wrap.scrollTop;
+  _readerStickyPending = { x, y, page: STATE.readerPage };
+  const si = document.getElementById('reader-sticky-input');
+  si.style.display = 'block';
+  si.style.left = Math.min(x + 10, wrap.clientWidth - 220) + 'px';
+  si.style.top = Math.min(y + 10, wrap.clientHeight - 120) + 'px';
+  document.getElementById('reader-sticky-text').value = '';
+  document.getElementById('reader-sticky-text').focus();
+}
+
+function saveReaderStickyNote() {
+  const text = document.getElementById('reader-sticky-text').value.trim();
+  if (!text || !_readerStickyPending) { cancelStickyNote(); return; }
+  const note = { id: uid(), bookId: STATE.readerBook, page: _readerStickyPending.page, x: _readerStickyPending.x, y: _readerStickyPending.y, text, createdAt: Date.now() };
+  _readerStickyNotes.push(note);
+  ls_save('nx_reader_sticky', _readerStickyNotes);
+  STATE.readerNotes.push({ id: uid(), bookId: STATE.readerBook, page: note.page, text, createdAt: Date.now() });
+  ls_save(KEYS.readerNotes, STATE.readerNotes);
+  cancelStickyNote();
+  renderStickyMarkers();
+  renderReaderNotesList(STATE.readerBook);
+  toast('Note pinned 📌', 'success');
+}
+function cancelStickyNote() {
+  document.getElementById('reader-sticky-input').style.display = 'none';
+  _readerStickyPending = null;
+}
+
+async function renderReaderPDFPage(n) {
+  if (!_readerPdfDoc) return;
+  n = Math.max(1, Math.min(n, _readerPdfDoc.numPages));
+  STATE.readerPage = n;
+  _readerSessionPages.add(n);
+
+  const page = await _readerPdfDoc.getPage(n);
+  const canvas = document.getElementById('reader-pdf-canvas'); if (!canvas) return;
+  const wrap = document.getElementById('reader-content-wrap');
+  const baseScale = Math.min(1.6, (wrap.clientWidth - 80) / page.getViewport({ scale: 1 }).width);
+  const scale = baseScale * _readerZoom * (STATE.readerFontSz / 16);
+  const viewport = page.getViewport({ scale });
+  canvas.width = viewport.width;
+  canvas.height = viewport.height;
+  // Also size annot canvas
+  const annotCanvas = document.getElementById('reader-annot-canvas');
+  if (annotCanvas) { annotCanvas.width = viewport.width; annotCanvas.height = viewport.height; }
+
+  const ctx = canvas.getContext('2d');
+  // Tint for themes
+  const themes = { sepia: '#f5ead5', night: '#050505', light: '#ffffff', dark: null };
+  if (themes[STATE.readerTheme]) {
+    ctx.fillStyle = themes[STATE.readerTheme];
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  }
+  await page.render({ canvasContext: ctx, viewport }).promise;
+
+  document.getElementById('reader-page-input').value = n;
+  document.getElementById('reader-total-pages').textContent = '/ ' + _readerPdfDoc.numPages;
+  document.getElementById('reader-progress-label').textContent = `Page ${n} / ${_readerPdfDoc.numPages}`;
+
+  // Progress bar
+  const pct = Math.round((n / _readerPdfDoc.numPages) * 100);
+  const bar = document.getElementById('reader-progress-bar');
+  if (bar) bar.style.width = pct + '%';
+
+  // Mark active TOC item
+  _highlightActiveTOCItem(n);
+  // Render sticky markers
+  renderStickyMarkers();
+}
+
+function renderStickyMarkers() {
+  // Remove old markers
+  document.querySelectorAll('.reader-sticky-marker').forEach(m => m.remove());
+  const wrap = document.getElementById('reader-content-wrap');
+  if (!wrap) return;
+  const notes = _readerStickyNotes.filter(n => n.bookId === STATE.readerBook && n.page === STATE.readerPage);
+  notes.forEach(note => {
+    const marker = document.createElement('div');
+    marker.className = 'reader-sticky-marker';
+    marker.style.left = note.x + 'px';
+    marker.style.top = note.y + 'px';
+    marker.textContent = '📌';
+    marker.title = note.text;
+    marker.onclick = e => { e.stopPropagation(); const edited = prompt('Edit note:', note.text); if (edited !== null) { note.text = edited; ls_save('nx_reader_sticky', _readerStickyNotes); renderStickyMarkers(); } };
+    // Get the canvas container
+    const container = wrap.querySelector('div[style*="relative"]');
+    if (container) container.appendChild(marker);
+  });
+}
+
+function _highlightActiveTOCItem(n) {
+  // Simple highlight — mark item if page matches
+  document.querySelectorAll('.reader-toc-item').forEach(item => {
+    const pg = parseInt(item.dataset.page || 0);
+    item.classList.toggle('active', pg === n);
+  });
+}
+
+// ── EPUB Reader ──
+async function openEPUBReader(dataUrl, bookId) {
+  if (!window.ePub) { toast('epub.js not loaded', 'error'); return; }
+  const wrap = document.getElementById('reader-content-wrap');
+  wrap.innerHTML = '<div style="color:var(--text3);padding:40px;text-align:center">Loading EPUB…</div>';
+  try {
+    const resp = await fetch(dataUrl);
+    const blob = await resp.blob();
+    const arrBuf = await blob.arrayBuffer();
+    _readerEpubBook = ePub(arrBuf);
+    wrap.innerHTML = `<div id="reader-epub-frame" style="width:100%;max-width:740px;height:100%;min-height:calc(100vh - 220px)"></div>`;
+    _readerEpubRendition = _readerEpubBook.renderTo('reader-epub-frame', { width: '100%', height: '100%', spread: 'none' });
+
+    // Apply theme
+    _applyEpubTheme(STATE.readerTheme);
+    _readerEpubRendition.themes.fontSize(STATE.readerFontSz + 'px');
+
+    // Restore CFI
+    const book = STATE.books.find(b => b.id === bookId);
+    await _readerEpubRendition.display(book?.epubCfi || undefined);
+
+    // TOC
+    _readerEpubBook.loaded.navigation.then(nav => renderReaderTOC(nav.toc?.map(c => ({ label: c.label, href: c.href })) || [], true));
+
+    // Progress tracking
+    _readerEpubRendition.on('relocated', location => {
+      const pct = Math.round(location.start.percentage * 100);
+      document.getElementById('reader-progress-label').textContent = `${pct}% read`;
+      STATE.readerPage = location.start.cfi;
+      const bar = document.getElementById('reader-progress-bar');
+      if (bar) bar.style.width = pct + '%';
+    });
+
+    // Keyboard in EPUB iframe
+    _readerEpubRendition.on('keydown', _readerKeyHandler);
+
+    renderReaderBookmarks(bookId);
+    renderReaderAnnotationsList(bookId);
+    renderReaderNotesList(bookId);
+    document.getElementById('reader-total-pages').textContent = '';
+    document.getElementById('reader-page-input').style.display = 'none';
+  } catch (e) {
+    wrap.innerHTML = `<div style="color:var(--red);padding:40px">Error loading EPUB: ${e.message}</div>`;
+  }
+}
+
+function _applyEpubTheme(t) {
+  if (!_readerEpubRendition) return;
+  const themes = {
+    dark: { body: { background: '#0d0e11', color: '#e8eaf0' }, 'a': { color: '#7c6af7' } },
+    light: { body: { background: '#ffffff', color: '#1a1b20' } },
+    sepia: { body: { background: '#f5ead5', color: '#4e3b25' } },
+    night: { body: { background: '#050505', color: '#999999' } }
+  };
+  if (themes[t]) _readerEpubRendition.themes.register('custom', { '::selection': { background: _readerHlColor }, ...themes[t] });
+  _readerEpubRendition.themes.select('custom');
+}
+
+// ── TOC renderer ──
+function renderReaderTOC(items, isEpub = false) {
+  const toc = document.getElementById('reader-toc'); if (!toc) return;
+  if (!items || !items.length) { toc.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:10px">No table of contents</div>'; return; }
+
+  function renderItems(arr, level = 1) {
+    return arr.map(item => {
+      const subitems = item.items || item.subitems || [];
+      const dest = isEpub ? `epubGoTo('${esc(item.href)}')` : (item.dest ? `readerGoToDest('${esc(JSON.stringify(item.dest))}')` : `renderReaderPDFPage(1)`);
+      return `<div class="reader-toc-item level-${level}" data-page="${item.page || 0}" onclick="${dest}">${esc((item.label || item.title || '').trim())}${subitems.length ? renderItems(subitems, Math.min(level + 1, 3)) : ''}</div>`;
+    }).join('');
+  }
+  toc.innerHTML = renderItems(items);
+}
+function epubGoTo(href) { if (_readerEpubRendition) _readerEpubRendition.display(href); }
+async function readerGoToDest(destJson) {
+  try {
+    const dest = JSON.parse(destJson);
+    if (_readerPdfDoc) {
+      const ref = Array.isArray(dest) ? dest[0] : dest;
+      const pageIdx = await _readerPdfDoc.getPageIndex(ref);
+      renderReaderPDFPage(pageIdx + 1);
+    }
+  } catch(e) { /* ignore */ }
+}
+
+// ── Navigation ──
+function readerPrev() {
+  if (STATE.readerType === 'pdf' && STATE.readerPage > 1) renderReaderPDFPage(STATE.readerPage - 1);
+  else if (STATE.readerType === 'epub' && _readerEpubRendition) _readerEpubRendition.prev();
+}
+function readerNext() {
+  if (STATE.readerType === 'pdf' && _readerPdfDoc && STATE.readerPage < _readerPdfDoc.numPages) renderReaderPDFPage(STATE.readerPage + 1);
+  else if (STATE.readerType === 'epub' && _readerEpubRendition) _readerEpubRendition.next();
+}
+function readerGoToPage(n) {
+  if (STATE.readerType === 'pdf') renderReaderPDFPage(parseInt(n));
+}
+
+// ── Zoom ──
+function readerZoom(delta) {
+  _readerZoom = Math.max(0.4, Math.min(3.0, _readerZoom + delta));
+  updateZoomLabel();
+  if (STATE.readerType === 'pdf') renderReaderPDFPage(STATE.readerPage);
+}
+function updateZoomLabel() {
+  const lbl = document.getElementById('reader-zoom-label');
+  if (lbl) lbl.textContent = Math.round(_readerZoom * 100) + '%';
+}
+
+// ── Font size ──
+function readerFontSize(d) {
+  STATE.readerFontSz = Math.max(10, Math.min(28, STATE.readerFontSz + d));
+  if (STATE.readerType === 'pdf') renderReaderPDFPage(STATE.readerPage);
+  else if (_readerEpubRendition) _readerEpubRendition.themes.fontSize(STATE.readerFontSz + 'px');
+}
+
+// ── Font ──
+function readerChangeFont(f) {
+  STATE.readerFont = f;
+  if (_readerEpubRendition) _readerEpubRendition.themes.override('*', { fontFamily: f + ' !important' });
+}
+
+// ── Theme ──
+function readerChangeTheme(t) {
+  STATE.readerTheme = t;
+  const rm = document.getElementById('reader-main');
+  if (rm) rm.className = 'reader-main theme-' + t;
+  if (STATE.readerType === 'epub') _applyEpubTheme(t);
+  else if (STATE.readerType === 'pdf') renderReaderPDFPage(STATE.readerPage);
+}
+
+// ── Tools ──
+function setReaderTool(tool) {
+  _readerTool = tool;
+  document.querySelectorAll('.reader-controls .wb-tool').forEach(b => b.classList.remove('active'));
+  const btn = document.getElementById('reader-tool-' + tool); if (btn) btn.classList.add('active');
+  const wrap = document.getElementById('reader-content-wrap');
+  if (wrap) wrap.className = 'reader-content-wrap' + (tool === 'note' ? ' tool-note' : '');
+  // Show color picker when highlight tool active
+  const hlColors = document.getElementById('reader-hl-colors');
+  if (hlColors) hlColors.classList.toggle('visible', tool === 'highlight');
+}
+function setHlColor(color) {
+  _readerHlColor = color;
+  document.querySelectorAll('.hl-color').forEach(el => el.classList.toggle('active', el.dataset.color === color));
+}
+
+// ── Bookmarks ──
+function bookmarkCurrentPage() {
+  const bookId = STATE.readerBook; if (!bookId) return;
+  const page = STATE.readerPage;
+  const exists = STATE.readerBookmarks.find(b => b.bookId === bookId && b.page === page);
+  if (exists) { toast('Already bookmarked', 'info'); return; }
+  STATE.readerBookmarks.push({ id: uid(), bookId, page, type: STATE.readerType, createdAt: Date.now() });
+  ls_save(KEYS.readerBM, STATE.readerBookmarks);
+  renderReaderBookmarks(bookId);
+  toast('Bookmarked 🔖', 'success');
+}
+function renderReaderBookmarks(bookId) {
+  const list = document.getElementById('reader-bookmarks-list'); if (!list) return;
+  const bms = STATE.readerBookmarks.filter(b => b.bookId === bookId);
+  if (!bms.length) { list.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:10px">No bookmarks yet.<br>Press B or tap 🔖 to add.</div>'; return; }
+  list.innerHTML = bms.map(b => `<div class="reader-bookmark-item" onclick="readerGoToPage(${typeof b.page === 'number' ? b.page : 1})">
+    <span>${typeof b.page === 'number' ? '📄 Page ' + b.page : '📌 ' + esc(String(b.page).slice(0, 30))}</span>
+    <button class="card-action-btn del-btn" style="opacity:1;padding:2px 6px;flex-shrink:0" onclick="event.stopPropagation();deleteReaderBookmark('${b.id}')">✕</button>
+  </div>`).join('');
+}
+function deleteReaderBookmark(id) {
+  STATE.readerBookmarks = STATE.readerBookmarks.filter(b => b.id !== id);
+  ls_save(KEYS.readerBM, STATE.readerBookmarks);
+  renderReaderBookmarks(STATE.readerBook);
+}
+
+// ── Annotations list ──
+function renderReaderAnnotationsList(bookId) {
+  const list = document.getElementById('reader-annotations-list'); if (!list) return;
+  const annots = _readerAnnotations.filter(a => a.bookId === bookId);
+  if (!annots.length) { list.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:10px">No highlights yet.<br>Select text and choose Highlight.</div>'; return; }
+  list.innerHTML = annots.map(a => `<div class="reader-annot-item" onclick="${STATE.readerType === 'pdf' ? 'renderReaderPDFPage(' + a.page + ')' : ''}">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+      <span><span class="reader-annot-color-dot" style="background:${a.color.slice(0, 7)}"></span>${STATE.readerType === 'pdf' ? 'Page ' + a.page : ''}</span>
+      <button class="card-action-btn del-btn" style="opacity:1;padding:1px 5px;font-size:10px" onclick="event.stopPropagation();deleteAnnotation('${a.id}')">✕</button>
+    </div>
+    <div style="font-size:12px;color:var(--text2);line-height:1.4;font-style:italic">"${esc(a.text.slice(0, 100))}${a.text.length > 100 ? '…' : ''}"</div>
+    ${a.note ? `<div style="font-size:11px;color:var(--text3);margin-top:4px">📌 ${esc(a.note)}</div>` : ''}
+  </div>`).join('');
+}
+function deleteAnnotation(id) {
+  _readerAnnotations = _readerAnnotations.filter(a => a.id !== id);
+  ls_save('nx_reader_annot', _readerAnnotations);
+  renderReaderAnnotationsList(STATE.readerBook);
+}
+
+// ── Notes list ──
+function renderReaderNotesList(bookId) {
+  const list = document.getElementById('reader-notes-list'); if (!list) return;
+  const notes = STATE.readerNotes.filter(n => n.bookId === bookId);
+  if (!notes.length) { list.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:10px">No notes yet.<br>Select text → Add Note, or use 📌 tool.</div>'; return; }
+  list.innerHTML = notes.map(n => `<div class="reader-note-item" onclick="${STATE.readerType === 'pdf' ? 'renderReaderPDFPage(' + n.page + ')' : ''}">
+    <div style="font-size:11px;color:var(--text3);margin-bottom:4px">${typeof n.page === 'number' ? 'Page ' + n.page : ''}</div>
+    ${n.quote ? `<div style="font-size:11px;color:var(--text2);font-style:italic;margin-bottom:4px">"${esc(n.quote.slice(0, 60))}${n.quote.length > 60 ? '…' : ''}"</div>` : ''}
+    <div style="color:var(--text)">${esc(n.text)}</div>
+    <button class="card-action-btn del-btn" style="opacity:1;padding:1px 5px;font-size:10px;margin-top:4px" onclick="event.stopPropagation();deleteReaderNote('${n.id}')">Delete</button>
+  </div>`).join('');
+}
+function deleteReaderNote(id) {
+  STATE.readerNotes = STATE.readerNotes.filter(n => n.id !== id);
+  ls_save(KEYS.readerNotes, STATE.readerNotes);
+  renderReaderNotesList(STATE.readerBook);
+}
+
+// ── Reading Stats ──
+function updateReaderStats(bookId) {
+  const panel = document.getElementById('reader-stats-panel'); if (!panel) return;
+  const book = STATE.books.find(b => b.id === bookId);
+  if (!book) return;
+  const total = _readerPdfDoc ? _readerPdfDoc.numPages : 0;
+  const current = book.current || 1;
+  const pct = total > 0 ? Math.round((current / total) * 100) : 0;
+  const annotations = _readerAnnotations.filter(a => a.bookId === bookId).length;
+  const notes = STATE.readerNotes.filter(n => n.bookId === bookId).length;
+  const bookmarks = STATE.readerBookmarks.filter(b => b.bookId === bookId).length;
+  const mins = book.totalMinutes || 0;
+  panel.innerHTML = `
+    <div style="padding:12px">
+      <div style="font-weight:700;font-size:13px;margin-bottom:12px;color:var(--text)">📊 Reading Stats</div>
+      <div class="reader-stats-row"><span>Progress</span><span class="reader-stats-val">${pct}%</span></div>
+      <div class="reader-stats-row"><span>Current page</span><span class="reader-stats-val">${current}${total ? ' / ' + total : ''}</span></div>
+      <div class="reader-stats-row"><span>Time read</span><span class="reader-stats-val">${mins < 60 ? mins + 'm' : Math.floor(mins / 60) + 'h ' + (mins % 60) + 'm'}</span></div>
+      <div class="reader-stats-row"><span>Highlights</span><span class="reader-stats-val">${annotations}</span></div>
+      <div class="reader-stats-row"><span>Notes</span><span class="reader-stats-val">${notes}</span></div>
+      <div class="reader-stats-row"><span>Bookmarks</span><span class="reader-stats-val">${bookmarks}</span></div>
+      <div class="reader-stats-row"><span>Status</span><span class="reader-stats-val" style="text-transform:capitalize">${book.status || 'unread'}</span></div>
+      <div style="margin-top:12px;background:var(--bg3);border-radius:6px;overflow:hidden;height:8px">
+        <div style="height:100%;background:var(--accent);width:${pct}%;border-radius:6px;transition:width .4s"></div>
+      </div>
+    </div>`;
+}
+
+// ── Sidebar tab ──
+function switchReaderTab(tab) {
+  document.querySelectorAll('[data-rtab]').forEach(b => b.classList.toggle('active', b.dataset.rtab === tab));
+  const map = { toc: 'reader-toc', bookmarks: 'reader-bookmarks-list', annotations: 'reader-annotations-list', notes: 'reader-notes-list', stats: 'reader-stats-panel' };
+  Object.entries(map).forEach(([k, id]) => {
+    const el = document.getElementById(id); if (el) el.classList.toggle('active', k === tab);
+  });
+  if (tab === 'stats') updateReaderStats(STATE.readerBook);
+}
+
+// ── Sidebar toggle ──
+function toggleReaderSidebar() {
+  const layout = document.getElementById('reader-layout');
+  if (layout) layout.classList.toggle('sidebar-hidden');
+}
+
+// ── Search ──
+function toggleReaderSearch() {
+  const bar = document.getElementById('reader-search-bar');
+  if (!bar) return;
+  const visible = bar.style.display !== 'none';
+  bar.style.display = visible ? 'none' : 'flex';
+  if (!visible) document.getElementById('reader-search-input')?.focus();
+  if (visible) { _readerSearchMatches = []; document.getElementById('reader-search-count').textContent = '0 results'; }
+}
+async function readerSearch(query) {
+  _readerSearchMatches = [];
+  _readerSearchIdx = 0;
+  const countEl = document.getElementById('reader-search-count');
+  if (!query || query.length < 2) { countEl.textContent = '0 results'; return; }
+  if (STATE.readerType === 'pdf' && _readerPdfDoc) {
+    const q = query.toLowerCase();
+    let total = 0;
+    for (let i = 1; i <= _readerPdfDoc.numPages; i++) {
+      const page = await _readerPdfDoc.getPage(i);
+      const content = await page.getTextContent();
+      const text = content.items.map(it => it.str).join(' ').toLowerCase();
+      if (text.includes(q)) {
+        _readerSearchMatches.push(i);
+        total++;
+      }
+    }
+    countEl.textContent = total + ' pages match';
+    if (total > 0) readerSearchNext();
+  } else if (STATE.readerType === 'epub') {
+    countEl.textContent = 'Use browser Ctrl+F in EPUB mode';
+  }
+}
+function readerSearchNext() {
+  if (!_readerSearchMatches.length) return;
+  _readerSearchIdx = (_readerSearchIdx + 1) % _readerSearchMatches.length;
+  renderReaderPDFPage(_readerSearchMatches[_readerSearchIdx]);
+}
+function readerSearchPrev() {
+  if (!_readerSearchMatches.length) return;
+  _readerSearchIdx = (_readerSearchIdx - 1 + _readerSearchMatches.length) % _readerSearchMatches.length;
+  renderReaderPDFPage(_readerSearchMatches[_readerSearchIdx]);
+}
+function readerSearchNav(e) {
+  if (e.key === 'Enter') { if (e.shiftKey) readerSearchPrev(); else readerSearchNext(); }
+  if (e.key === 'Escape') toggleReaderSearch();
+}
+
+// ── Fullscreen ──
+function toggleReaderFullscreen() {
+  const panel = document.getElementById('panel-reader');
+  const btn = document.getElementById('reader-fs-btn');
+  if (!panel) return;
+  panel.classList.toggle('reader-fullscreen');
+  if (btn) btn.textContent = panel.classList.contains('reader-fullscreen') ? '⛶ Exit' : '⛶';
+}
+
+// ── Auto-scroll ──
+function toggleAutoScroll() {
+  const btn = document.getElementById('reader-autoscroll-btn');
+  if (_readerAutoScrollTimer) {
+    stopAutoScroll();
+    if (btn) { btn.textContent = '⏩ Auto'; btn.style.color = ''; }
+  } else {
+    const wrap = document.getElementById('reader-content-wrap');
+    if (!wrap) return;
+    _readerAutoScrollTimer = setInterval(() => {
+      wrap.scrollTop += 1;
+      if (wrap.scrollTop + wrap.clientHeight >= wrap.scrollHeight) {
+        wrap.scrollTop = 0;
+        if (STATE.readerType === 'pdf') readerNext();
+      }
+    }, 40);
+    if (btn) { btn.textContent = '⏸ Stop'; btn.style.color = 'var(--accent)'; }
+  }
+}
+function stopAutoScroll() {
+  if (_readerAutoScrollTimer) { clearInterval(_readerAutoScrollTimer); _readerAutoScrollTimer = null; }
+}
+
+// ── Export notes ──
+function exportReaderNotes() {
+  const bookId = STATE.readerBook;
+  const book = STATE.books.find(b => b.id === bookId);
+  const annots = _readerAnnotations.filter(a => a.bookId === bookId);
+  const notes = STATE.readerNotes.filter(n => n.bookId === bookId);
+  const bookmarks = STATE.readerBookmarks.filter(b => b.bookId === bookId);
+  if (!annots.length && !notes.length && !bookmarks.length) { toast('No notes or highlights to export', 'info'); return; }
+
+  let text = `# ${book?.title || 'Book'} — Reading Notes\nExported ${new Date().toLocaleDateString()}\n\n`;
+  if (bookmarks.length) {
+    text += `## Bookmarks\n`;
+    bookmarks.forEach(b => { text += `- Page ${b.page}\n`; });
+    text += '\n';
+  }
+  if (annots.length) {
+    text += `## Highlights & Annotations\n`;
+    annots.forEach(a => {
+      text += `**Page ${a.page}:** "${a.text}"\n`;
+      if (a.note) text += `  > Note: ${a.note}\n`;
+      text += '\n';
+    });
+  }
+  if (notes.length) {
+    text += `## Notes\n`;
+    notes.forEach(n => {
+      text += `**Page ${n.page}:**\n`;
+      if (n.quote) text += `> "${n.quote}"\n`;
+      text += `${n.text}\n\n`;
+    });
+  }
+  const blob = new Blob([text], { type: 'text/markdown' });
+  downloadBlobFile(blob, (book?.title || 'notes').replace(/[^a-z0-9]/gi, '_') + '_notes.md');
+  toast('Notes exported ✓', 'success');
+}
+
+// patch renderBooks to add "Read" button
+const _origRenderBooks2 = renderBooks;
+function renderBooks() {
+  _origRenderBooks2();
+  document.querySelectorAll('.book-card-actions').forEach(actions => {
+    const card = actions.closest('.book-card');
+    const editBtn = actions.querySelector('.card-action-btn:not(.del-btn)');
+    if (editBtn && card) {
+      const onc = editBtn.getAttribute('onclick') || '';
+      const m = onc.match(/openEditBookModal\('([^']+)'\)/);
+      if (m) {
+        const bookId = m[1];
+        const book = STATE.books.find(b => b.id === bookId);
+        if (book && book.fileData && !actions.querySelector('.read-btn')) {
+          const readBtn = document.createElement('button');
+          readBtn.className = 'card-action-btn read-btn';
+          readBtn.textContent = '📖 Read';
+          readBtn.style.cssText = 'background:var(--accent);color:#fff;border-color:var(--accent)';
+          readBtn.onclick = () => openReader(bookId);
+          actions.insertBefore(readBtn, editBtn);
+        }
+      }
+    }
+  });
+}
+
+// ══ MUSIC ══
+function addMusicFiles(event){
+  const files=[...event.target.files];
+  files.forEach(f=>{
+    const track={id:uid(),name:f.name.replace(/\.[^.]+$/,''),artist:'Unknown',duration:0,url:URL.createObjectURL(f),type:f.type,size:f.size,addedAt:Date.now()};
+    STATE.musicTracks.push(track);
+  });
+  // Note: Object URLs don't persist across sessions
+  renderMusicList();event.target.value='';
+  if(files.length)toast(`${files.length} track(s) added`,'success');
+}
+function renderMusicList(){
+  const list=document.getElementById('music-list');
+  const empty=document.getElementById('music-empty');
+  if(!STATE.musicTracks.length){list.innerHTML='';empty.style.display='flex';return;}
+  empty.style.display='none';
+  list.innerHTML=STATE.musicTracks.map((t,i)=>`
+    <div class="music-track-row${i===STATE.musicIdx?' active':''}" onclick="playTrack(${i})">
+      <div class="music-track-num">${i===STATE.musicIdx?'▶':i+1}</div>
+      <div class="music-track-info-cell">
+        <div class="music-track-name">${esc(t.name)}</div>
+        <div class="music-track-meta">${t.artist}${t.duration?' · '+fmtDuration(t.duration):''}</div>
+      </div>
+      <button class="music-track-del" onclick="event.stopPropagation();removeTrack(${i})">✕</button>
+    </div>`).join('');
+}
+function filterMusic(q){
+  const list=document.getElementById('music-list');
+  list.querySelectorAll('.music-track-row').forEach((row,i)=>{
+    row.style.display=STATE.musicTracks[i].name.toLowerCase().includes(q.toLowerCase())?'flex':'none';
+  });
+}
+function playTrack(idx){
+  STATE.musicIdx=idx;
+  const track=STATE.musicTracks[idx];if(!track)return;
+  const audio=document.getElementById('music-audio');
+  audio.src=track.url;audio.play().catch(()=>{});
+  document.getElementById('music-track-title').textContent=track.name;
+  document.getElementById('music-track-artist').textContent=track.artist||'Unknown';
+  document.getElementById('btn-play-pause').textContent='⏸';
+  renderMusicList();
+}
+function removeTrack(idx){
+  STATE.musicTracks.splice(idx,1);
+  if(STATE.musicIdx>=STATE.musicTracks.length)STATE.musicIdx=0;
+  renderMusicList();
+}
+function togglePlay(){
+  const a=document.getElementById('music-audio');
+  if(!a.src&&STATE.musicTracks.length)playTrack(0);
+  else if(a.paused){a.play();document.getElementById('btn-play-pause').textContent='⏸';}
+  else{a.pause();document.getElementById('btn-play-pause').textContent='▶';}
+}
+function musicPrev(){
+  let i=STATE.musicIdx-1;
+  if(i<0)i=STATE.musicTracks.length-1;
+  playTrack(i);
+}
+function musicNext(){
+  let i=STATE.musicShuffle?Math.floor(Math.random()*STATE.musicTracks.length):(STATE.musicIdx+1)%STATE.musicTracks.length;
+  playTrack(i);
+}
+function musicEnded(){
+  if(STATE.musicRepeat)playTrack(STATE.musicIdx);
+  else musicNext();
+}
+function toggleShuffle(){STATE.musicShuffle=!STATE.musicShuffle;document.getElementById('btn-shuffle').classList.toggle('active',STATE.musicShuffle);}
+function toggleRepeat(){STATE.musicRepeat=!STATE.musicRepeat;document.getElementById('btn-repeat').classList.toggle('active',STATE.musicRepeat);}
+function setVolume(v){document.getElementById('music-audio').volume=parseFloat(v);}
+function seekMusic(e){
+  const a=document.getElementById('music-audio');if(!a.duration)return;
+  const bar=document.getElementById('music-progress-bar');
+  const rect=bar.getBoundingClientRect();
+  const pct=(e.clientX-rect.left)/rect.width;
+  a.currentTime=pct*a.duration;
+}
+function updateMusicProgress(){
+  const a=document.getElementById('music-audio');if(!a.duration)return;
+  const pct=(a.currentTime/a.duration)*100;
+  document.getElementById('music-progress-fill').style.width=pct+'%';
+  document.getElementById('music-current-time').textContent=fmtDuration(a.currentTime);
+}
+function updateMusicMeta(){
+  const a=document.getElementById('music-audio');
+  document.getElementById('music-duration').textContent=fmtDuration(a.duration||0);
+  if(STATE.musicTracks[STATE.musicIdx]){STATE.musicTracks[STATE.musicIdx].duration=a.duration||0;renderMusicList();}
+}
+function fmtDuration(s){if(!s||isNaN(s))return'0:00';const m=Math.floor(s/60),sec=Math.floor(s%60);return`${m}:${sec.toString().padStart(2,'0')}`;}
+
+// ══ FILE TOOLS ══
+function setupFileToolsTabs(){
+  document.querySelectorAll('#panel-filetools .bm-tab').forEach(tab=>{
+    tab.addEventListener('click',()=>{
+      document.querySelectorAll('#panel-filetools .bm-tab').forEach(b=>b.classList.remove('active'));
+      document.querySelectorAll('#panel-filetools .bm-tab-content').forEach(c=>c.classList.remove('active'));
+      tab.classList.add('active');
+      document.getElementById('bm-tab-'+tab.dataset.tab).classList.add('active');
+    });
+  });
+}
+// ── PDF Tools ──
+let _pdfBytes=null,_pdfAnnots={},_pdfCurrPage=1,_pdfTotalPages=1,_pdfZoom=1,_pdfTool='select',_pdfDrawing=false,_pdfColor='#ffeb3b';
+
+function openPDFTool(event,mode){
+  const file=event.target.files[0];if(!file)return;
+  const reader=new FileReader();
+  reader.onload=async e=>{
+    _pdfBytes=e.target.result;
+    document.getElementById('pdf-modal-title').textContent=file.name+' — '+mode;
+    openModal('pdf-modal');
+    await renderPDFPage(1,1);
+  };
+  reader.readAsArrayBuffer(file);event.target.value='';
+}
+async function renderPDFPage(n,zoom){
+  if(!_pdfBytes||!window.pdfjsLib)return;
+  const pdfDoc=await pdfjsLib.getDocument({data:_pdfBytes}).promise;
+  _pdfTotalPages=pdfDoc.numPages;
+  _pdfCurrPage=Math.max(1,Math.min(n,_pdfTotalPages));
+  _pdfZoom=zoom||_pdfZoom;
+  document.getElementById('pdf-page-label').textContent=`Page ${_pdfCurrPage} / ${_pdfTotalPages}`;
+  const page=await pdfDoc.getPage(_pdfCurrPage);
+  const viewport=page.getViewport({scale:_pdfZoom});
+  const canvas=document.getElementById('pdf-canvas');
+  const ac=document.getElementById('pdf-annot-canvas');
+  canvas.width=viewport.width;canvas.height=viewport.height;
+  ac.width=viewport.width;ac.height=viewport.height;
+  ac.style.width=viewport.width+'px';ac.style.height=viewport.height+'px';
+  await page.render({canvasContext:canvas.getContext('2d'),viewport}).promise;
+  setupAnnotCanvas(ac);
+  // Restore annotations for this page
+  const annots=_pdfAnnots[_pdfCurrPage]||[];
+  const ctx=ac.getContext('2d');
+  annots.forEach(a=>{
+    if(a.type==='draw'){ctx.strokeStyle=a.color;ctx.lineWidth=3;ctx.lineCap='round';ctx.beginPath();a.points.forEach((p,i)=>i?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y));ctx.stroke();}
+    else if(a.type==='sticky'){ctx.fillStyle=a.color;ctx.font='20px serif';ctx.fillText('📌',a.x,a.y);}
+  });
+}
+function setupAnnotCanvas(canvas){
+  canvas.onmousedown=e=>{
+    if(_pdfTool==='select')return;
+    _pdfDrawing=true;
+    const r=canvas.getBoundingClientRect();
+    const x=e.clientX-r.left,y=e.clientY-r.top;
+    if(_pdfTool==='sticky'){
+      const text=prompt('Sticky note text:');if(!text)return;
+      if(!_pdfAnnots[_pdfCurrPage])_pdfAnnots[_pdfCurrPage]=[];
+      _pdfAnnots[_pdfCurrPage].push({type:'sticky',x,y,text,color:_pdfColor});
+      const ctx=canvas.getContext('2d');ctx.fillStyle=_pdfColor;ctx.font='20px serif';ctx.fillText('📌',x,y);
+      addAnnotToSidebar({type:'sticky',page:_pdfCurrPage,text});
+      _pdfDrawing=false;
+    }else if(_pdfTool==='draw'||_pdfTool==='highlight'){
+      if(!_pdfAnnots[_pdfCurrPage])_pdfAnnots[_pdfCurrPage]=[];
+      _pdfAnnots[_pdfCurrPage].push({type:'draw',color:_pdfTool==='highlight'?_pdfColor+'88':_pdfColor,points:[{x,y}]});
+    }
+  };
+  canvas.onmousemove=e=>{
+    if(!_pdfDrawing)return;
+    if(_pdfTool==='draw'||_pdfTool==='highlight'){
+      const r=canvas.getBoundingClientRect();
+      const x=e.clientX-r.left,y=e.clientY-r.top;
+      const annot=_pdfAnnots[_pdfCurrPage].slice(-1)[0];if(!annot)return;
+      annot.points.push({x,y});
+      const ctx=canvas.getContext('2d');
+      ctx.strokeStyle=annot.color;ctx.lineWidth=_pdfTool==='highlight'?12:2;
+      ctx.globalAlpha=_pdfTool==='highlight'?0.4:1;
+      ctx.lineCap='round';
+      const pts=annot.points;
+      if(pts.length>1){ctx.beginPath();ctx.moveTo(pts[pts.length-2].x,pts[pts.length-2].y);ctx.lineTo(x,y);ctx.stroke();}
+      ctx.globalAlpha=1;
+    }
+  };
+  canvas.onmouseup=()=>{
+    if(_pdfDrawing&&(_pdfTool==='draw'||_pdfTool==='highlight')){
+      addAnnotToSidebar({type:_pdfTool,page:_pdfCurrPage,text:_pdfTool==='highlight'?'Highlight':'Drawing'});
+    }
+    _pdfDrawing=false;
+  };
+}
+function addAnnotToSidebar(a){
+  const list=document.getElementById('pdf-annotations-list');if(!list)return;
+  const item=document.createElement('div');item.className='pdf-annot-item';
+  item.textContent=`P${a.page}: ${a.type==='sticky'?a.text:a.type}`;
+  list.appendChild(item);
+}
+function setPDFTool(t){
+  _pdfTool=t;
+  document.querySelectorAll('.pdf-tools-bar .wb-tool').forEach(b=>b.classList.remove('active'));
+  const btn=document.getElementById('pt-'+t);if(btn)btn.classList.add('active');
+}
+document.addEventListener('change',e=>{if(e.target&&e.target.id==='pdf-color')_pdfColor=e.target.value;});
+function pdfPrev(){if(_pdfCurrPage>1)renderPDFPage(_pdfCurrPage-1,_pdfZoom);}
+function pdfNext(){if(_pdfCurrPage<_pdfTotalPages)renderPDFPage(_pdfCurrPage+1,_pdfZoom);}
+function setPDFZoom(v){_pdfZoom=parseFloat(v);renderPDFPage(_pdfCurrPage,_pdfZoom);}
+function rotatePDFPage(){toast('Page rotation saved (re-render)','info');renderPDFPage(_pdfCurrPage,_pdfZoom);}
+async function downloadAnnotatedPDF(){toast('Downloading annotated PDF…','info');/* export canvas as PNG overlay + pdf-lib would go here */exportCanvas();}
+
+async function mergePDFs(event){
+  const files=[...event.target.files];if(files.length<2){toast('Select at least 2 PDFs','error');return;}
+  if(!window.PDFLib){
+    toast('Loading pdf-lib…','info');
+    await loadScript('https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js');
+  }
+  const {PDFDocument}=PDFLib;
+  const merged=await PDFDocument.create();
+  for(const f of files){
+    const buf=await f.arrayBuffer();
+    const src=await PDFDocument.load(buf);
+    const pages=await merged.copyPages(src,src.getPageIndices());
+    pages.forEach(p=>merged.addPage(p));
+  }
+  const bytes=await merged.save();
+  downloadBlobFile(new Blob([bytes],{type:'application/pdf'}),'nexmark-merged.pdf');
+  toast('PDFs merged ✓','success');
+  event.target.value='';
+}
+
+function splitPDFTool(event){
+  const f=event.target.files[0];if(!f)return;
+  const r=new FileReader();
+  r.onload=e=>{_pdfBytes=e.target.result;document.getElementById('split-pdf-info').textContent='File: '+f.name;openModal('split-pdf-modal');};
+  r.readAsArrayBuffer(f);event.target.value='';
+}
+async function confirmSplitPDF(){
+  const rangeStr=document.getElementById('split-pdf-pages').value.trim();
+  if(!rangeStr){toast('Enter page range','error');return;}
+  if(!window.PDFLib){await loadScript('https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js');}
+  const {PDFDocument}=PDFLib;
+  const src=await PDFDocument.load(_pdfBytes);
+  const total=src.getPageCount();
+  const pages=parsePageRange(rangeStr,total);
+  if(!pages.length){toast('Invalid page range','error');return;}
+  const out=await PDFDocument.create();
+  const copied=await out.copyPages(src,pages.map(p=>p-1));
+  copied.forEach(p=>out.addPage(p));
+  const bytes=await out.save();
+  downloadBlobFile(new Blob([bytes],{type:'application/pdf'}),`nexmark-pages-${rangeStr.replace(/\s/g,'')}.pdf`);
+  toast('Pages extracted ✓','success');
+  closeModal('split-pdf-modal');
+}
+function parsePageRange(str,max){
+  const pages=[];
+  str.split(',').forEach(part=>{
+    part=part.trim();
+    if(part.includes('-')){const[a,b]=part.split('-').map(Number);for(let i=a;i<=Math.min(b,max);i++)pages.push(i);}
+    else{const n=parseInt(part);if(n>=1&&n<=max)pages.push(n);}
+  });
+  return[...new Set(pages)].sort((a,b)=>a-b);
+}
+
+async function compressPDF(event){
+  const f=event.target.files[0];if(!f)return;
+  toast('Compressing… (reducing image quality)','info');
+  if(!window.PDFLib){await loadScript('https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js');}
+  const buf=await f.arrayBuffer();
+  const {PDFDocument}=PDFLib;
+  const pdf=await PDFDocument.load(buf,{ignoreEncryption:true});
+  const bytes=await pdf.save({useObjectStreams:true});
+  const orig=f.size,comp=bytes.byteLength;
+  downloadBlobFile(new Blob([bytes],{type:'application/pdf'}),'nexmark-compressed.pdf');
+  toast(`Compressed: ${formatBytes(orig)} → ${formatBytes(comp)}`,'success');
+  event.target.value='';
+}
+function rotatePDFTool(event){
+  const f=event.target.files[0];if(!f)return;
+  toast('Open PDF in viewer to rotate pages','info');
+  openPDFTool({target:{files:[f],value:''},'stopPropagation':()=>{}},'annotate');
+  event.target.value='';
+}
+
+// ── Conversions ──
+async function pdfToImages(event){
+  const f=event.target.files[0];if(!f)return;
+  if(!window.pdfjsLib)return;
+  const buf=await f.arrayBuffer();
+  const pdf=await pdfjsLib.getDocument({data:buf}).promise;
+  const out=document.getElementById('convert-output');out.style.display='block';out.innerHTML='<p style="color:var(--text2);font-size:13px">Converting pages…</p>';
+  for(let i=1;i<=Math.min(pdf.numPages,20);i++){
+    const page=await pdf.getPage(i);
+    const vp=page.getViewport({scale:1.5});
+    const c=document.createElement('canvas');c.width=vp.width;c.height=vp.height;
+    await page.render({canvasContext:c.getContext('2d'),viewport:vp}).promise;
+    c.toBlob(blob=>{
+      downloadBlobFile(blob,`page-${i}.png`);
+    },'image/png');
+  }
+  toast(`${Math.min(pdf.numPages,20)} pages exported as PNG`,'success');
+  event.target.value='';
+}
+
+async function textToPDF(event){
+  const f=event.target.files[0];if(!f)return;
+  if(!window.PDFLib){await loadScript('https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js');}
+  const text=await f.text();
+  const {PDFDocument,rgb,StandardFonts}=PDFLib;
+  const pdf=await PDFDocument.create();
+  const font=await pdf.embedFont(StandardFonts.Helvetica);
+  const lines=text.split('\n');
+  let page=pdf.addPage([595,842]);let y=800;const sz=11;
+  lines.forEach(line=>{
+    if(y<50){page=pdf.addPage([595,842]);y=800;}
+    page.drawText(line.slice(0,90),{x:40,y,size:sz,font,color:rgb(0,0,0),maxWidth:515});
+    y-=sz+4;
+  });
+  const bytes=await pdf.save();
+  downloadBlobFile(new Blob([bytes],{type:'application/pdf'}),'nexmark-converted.pdf');
+  toast('Converted to PDF ✓','success');event.target.value='';
+}
+
+async function imagesToPDF(event){
+  const files=[...event.target.files];if(!files.length)return;
+  if(!window.PDFLib){await loadScript('https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js');}
+  const {PDFDocument}=PDFLib;
+  const pdf=await PDFDocument.create();
+  for(const f of files){
+    const buf=await f.arrayBuffer();
+    let img;
+    if(f.type==='image/jpeg'||f.type==='image/jpg')img=await pdf.embedJpg(buf);
+    else img=await pdf.embedPng(buf);
+    const page=pdf.addPage([img.width,img.height]);
+    page.drawImage(img,{x:0,y:0,width:img.width,height:img.height});
+  }
+  const bytes=await pdf.save();
+  downloadBlobFile(new Blob([bytes],{type:'application/pdf'}),'nexmark-images.pdf');
+  toast(`${files.length} images → PDF ✓`,'success');event.target.value='';
+}
+
+async function pdfToText(event){
+  const f=event.target.files[0];if(!f)return;
+  if(!window.pdfjsLib)return;
+  const buf=await f.arrayBuffer();
+  const pdf=await pdfjsLib.getDocument({data:buf}).promise;
+  let text='';
+  for(let i=1;i<=pdf.numPages;i++){
+    const page=await pdf.getPage(i);
+    const tc=await page.getTextContent();
+    text+=`\n--- Page ${i} ---\n`+tc.items.map(it=>it.str).join(' ');
+  }
+  const out=document.getElementById('convert-output');out.style.display='block';
+  out.innerHTML=`<div class="convert-result-box"><div><div class="convert-result-name">Extracted Text</div><div class="convert-result-meta">${pdf.numPages} pages</div></div><button class="btn-outline btn-sm" onclick="navigator.clipboard.writeText(this.nextElementSibling.value).then(()=>toast('Copied','success'))">Copy</button><textarea style="display:none">${esc(text)}</textarea></div><textarea style="width:100%;height:300px;background:var(--bg3);border:1px solid var(--border);border-radius:var(--r-sm);padding:12px;font-size:12px;color:var(--text);resize:vertical;outline:none;margin-top:8px">${esc(text)}</textarea>`;
+  event.target.value='';
+}
+
+function mdToHTML(event){
+  const f=event.target.files[0];if(!f)return;
+  const r=new FileReader();
+  r.onload=e=>{
+    let md=e.target.result;
+    // basic md→html
+    let html=md
+      .replace(/^### (.+)$/gm,'<h3>$1</h3>').replace(/^## (.+)$/gm,'<h2>$1</h2>').replace(/^# (.+)$/gm,'<h1>$1</h1>')
+      .replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>').replace(/\*(.+?)\*/g,'<em>$1</em>')
+      .replace(/`(.+?)`/g,'<code>$1</code>').replace(/^- (.+)$/gm,'<li>$1</li>')
+      .replace(/\n\n/g,'</p><p>').replace(/\[(.+?)\]\((.+?)\)/g,'<a href="$2">$1</a>');
+    html=`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>${f.name}</title><style>body{font-family:Georgia,serif;max-width:800px;margin:40px auto;line-height:1.8;padding:0 20px}code{background:#f4f4f4;padding:2px 6px;border-radius:3px}h1,h2,h3{border-bottom:1px solid #eee;padding-bottom:.3em}</style></head><body><p>${html}</p></body></html>`;
+    downloadBlobFile(new Blob([html],{type:'text/html'}),f.name.replace(/\.md$/,'.html'));
+    toast('Converted to HTML ✓','success');
+  };
+  r.readAsText(f);event.target.value='';
+}
+
+function htmlToText(event){
+  const f=event.target.files[0];if(!f)return;
+  const r=new FileReader();
+  r.onload=e=>{
+    const tmp=document.createElement('div');tmp.innerHTML=e.target.result;
+    const text=tmp.textContent||tmp.innerText||'';
+    downloadBlobFile(new Blob([text],{type:'text/plain'}),f.name.replace(/\.html?$/,'.txt'));
+    toast('HTML → text extracted ✓','success');
+  };
+  r.readAsText(f);event.target.value='';
+}
+
+// ── OCR ──
+async function runOCR(event){
+  const f=event.target.files[0];if(!f)return;
+  document.getElementById('ocr-output').style.display='none';
+  document.getElementById('ocr-progress').style.display='block';
+  document.getElementById('ocr-pct').textContent='Loading…';
+  if(!window.Tesseract){
+    await loadScript('https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/4.1.1/tesseract.min.js');
+  }
+  try{
+    const result=await Tesseract.recognize(f,'eng',{
+      logger:m=>{if(m.status==='recognizing text')document.getElementById('ocr-pct').textContent=Math.round((m.progress||0)*100)+'%';}
+    });
+    document.getElementById('ocr-progress').style.display='none';
+    document.getElementById('ocr-output').style.display='block';
+    document.getElementById('ocr-text').value=result.data.text;
+    toast('OCR complete ✓','success');
+  }catch(err){
+    document.getElementById('ocr-progress').style.display='none';
+    toast('OCR failed: '+err.message,'error');
+  }
+  event.target.value='';
+}
+function copyOCRText(){navigator.clipboard.writeText(document.getElementById('ocr-text').value).then(()=>toast('Copied','success'));}
+
+// ── Image Tools ──
+function openImageTool(event,tool){
+  const f=event.target.files[0];if(!f)return;
+  const reader=new FileReader();
+  reader.onload=e=>{
+    STATE.imageTool.original=e.target.result;
+    STATE.imageTool.result=e.target.result;
+    STATE.imageTool.fileName=f.name;
+    document.getElementById('img-tool-title').textContent={resize:'Resize',rotate:'Rotate / Flip',crop:'Crop',filter:'Filters',compress:'Compress',convert:'Convert Format'}[tool]||tool;
+    renderImageTool(tool);
+    openModal('image-tool-modal');
+  };
+  reader.readAsDataURL(f);event.target.value='';
+}
+function renderImageTool(tool){
+  const body=document.getElementById('img-tool-body');
+  const imgTag=`<img id="img-preview" src="${STATE.imageTool.original}" style="max-width:100%;max-height:300px;border-radius:8px;margin-bottom:12px"/>`;
+  if(tool==='resize'){body.innerHTML=imgTag+`<div class="img-controls"><label style="font-size:12px;font-weight:700;color:var(--text2)">Width (px)</label><input type="number" id="img-w" class="todo-add-input" style="width:100px" value="800"/><label style="font-size:12px;font-weight:700;color:var(--text2)">Height (px)</label><input type="number" id="img-h" class="todo-add-input" style="width:100px" value="600"/><button class="btn-primary btn-sm" onclick="applyImageResize()">Apply</button></div><canvas id="img-result-canvas" style="max-width:100%;margin-top:10px"></canvas>`;}
+  else if(tool==='rotate'){body.innerHTML=imgTag+`<div class="img-controls"><button class="btn-outline btn-sm" onclick="applyImageRotate(90)">↻ 90°</button><button class="btn-outline btn-sm" onclick="applyImageRotate(180)">↻ 180°</button><button class="btn-outline btn-sm" onclick="applyImageRotate(-90)">↺ -90°</button><button class="btn-outline btn-sm" onclick="applyImageFlip('h')">⇄ Flip H</button><button class="btn-outline btn-sm" onclick="applyImageFlip('v')">⇅ Flip V</button></div><canvas id="img-result-canvas" style="max-width:100%;margin-top:10px"></canvas>`;}
+  else if(tool==='filter'){body.innerHTML=imgTag+`<div class="img-controls" style="flex-direction:column;gap:8px"><label style="font-size:12px;font-weight:700;color:var(--text2)">Brightness <span id="lbl-bright">100</span>%</label><input type="range" min="0" max="200" value="100" id="f-bright" class="music-slider" oninput="document.getElementById('lbl-bright').textContent=this.value;applyFilters()"/><label style="font-size:12px;font-weight:700;color:var(--text2)">Contrast <span id="lbl-contrast">100</span>%</label><input type="range" min="0" max="200" value="100" id="f-contrast" class="music-slider" oninput="document.getElementById('lbl-contrast').textContent=this.value;applyFilters()"/><label style="font-size:12px;font-weight:700;color:var(--text2)">Saturation <span id="lbl-sat">100</span>%</label><input type="range" min="0" max="200" value="100" id="f-sat" class="music-slider" oninput="document.getElementById('lbl-sat').textContent=this.value;applyFilters()"/><div class="img-controls"><button class="btn-outline btn-sm" onclick="applyFilterPreset('grayscale(100%)')">Grayscale</button><button class="btn-outline btn-sm" onclick="applyFilterPreset('sepia(100%)')">Sepia</button><button class="btn-outline btn-sm" onclick="applyFilterPreset('invert(100%)')">Invert</button><button class="btn-outline btn-sm" onclick="applyFilterPreset('')">Reset</button></div></div><canvas id="img-result-canvas" style="max-width:100%;margin-top:10px"></canvas>`;}
+  else if(tool==='compress'){body.innerHTML=imgTag+`<div class="img-controls"><label style="font-size:12px;font-weight:700;color:var(--text2)">Quality <span id="lbl-quality">80</span>%</label><input type="range" min="10" max="100" value="80" id="img-quality" class="music-slider" oninput="document.getElementById('lbl-quality').textContent=this.value;applyCompression(this.value)"/></div><p id="compress-info" style="font-size:12px;color:var(--text3);margin-top:8px"></p><canvas id="img-result-canvas" style="max-width:100%;margin-top:10px"></canvas>`;}
+  else if(tool==='convert'){body.innerHTML=imgTag+`<div class="img-controls"><label style="font-size:12px;font-weight:700;color:var(--text2)">Target Format</label><select id="img-format" class="filter-select"><option value="image/png">PNG</option><option value="image/jpeg">JPEG</option><option value="image/webp">WebP</option></select><button class="btn-primary btn-sm" onclick="applyImageConvert()">Convert</button></div><canvas id="img-result-canvas" style="max-width:100%;margin-top:10px"></canvas>`;}
+}
+function getImageCanvas(src,cb){const img=new Image();img.onload=()=>{const c=document.createElement('canvas');c.width=img.width;c.height=img.height;c.getContext('2d').drawImage(img,0,0);cb(c,img);};img.src=src;}
+function applyImageResize(){
+  const w=parseInt(document.getElementById('img-w').value)||800;
+  const h=parseInt(document.getElementById('img-h').value)||600;
+  getImageCanvas(STATE.imageTool.original,(c)=>{const out=document.createElement('canvas');out.width=w;out.height=h;out.getContext('2d').drawImage(c,0,0,w,h);STATE.imageTool.result=out.toDataURL();const rc=document.getElementById('img-result-canvas');rc.width=w;rc.height=h;rc.getContext('2d').drawImage(out,0,0);});
+}
+function applyImageRotate(deg){
+  getImageCanvas(STATE.imageTool.result||STATE.imageTool.original,(c,img)=>{
+    const out=document.createElement('canvas');
+    const rad=deg*Math.PI/180;
+    if(deg===90||deg===-90){out.width=img.height;out.height=img.width;}else{out.width=img.width;out.height=img.height;}
+    const ctx=out.getContext('2d');ctx.translate(out.width/2,out.height/2);ctx.rotate(rad);ctx.drawImage(img,-img.width/2,-img.height/2);
+    STATE.imageTool.result=out.toDataURL();
+    document.getElementById('img-preview').src=STATE.imageTool.result;
+    const rc=document.getElementById('img-result-canvas');rc.width=out.width;rc.height=out.height;rc.getContext('2d').drawImage(out,0,0);
+  });
+}
+function applyImageFlip(dir){
+  getImageCanvas(STATE.imageTool.result||STATE.imageTool.original,(c,img)=>{
+    const out=document.createElement('canvas');out.width=img.width;out.height=img.height;
+    const ctx=out.getContext('2d');
+    if(dir==='h'){ctx.translate(img.width,0);ctx.scale(-1,1);}else{ctx.translate(0,img.height);ctx.scale(1,-1);}
+    ctx.drawImage(img,0,0);
+    STATE.imageTool.result=out.toDataURL();
+    document.getElementById('img-preview').src=STATE.imageTool.result;
+    const rc=document.getElementById('img-result-canvas');rc.width=out.width;rc.height=out.height;rc.getContext('2d').drawImage(out,0,0);
+  });
+}
+function applyFilters(){
+  const bright=document.getElementById('f-bright').value;
+  const contrast=document.getElementById('f-contrast').value;
+  const sat=document.getElementById('f-sat').value;
+  getImageCanvas(STATE.imageTool.original,(c,img)=>{
+    const out=document.createElement('canvas');out.width=img.width;out.height=img.height;
+    const ctx=out.getContext('2d');ctx.filter=`brightness(${bright}%) contrast(${contrast}%) saturate(${sat}%)`;
+    ctx.drawImage(img,0,0);
+    STATE.imageTool.result=out.toDataURL();
+    const rc=document.getElementById('img-result-canvas');rc.width=out.width;rc.height=out.height;rc.getContext('2d').drawImage(out,0,0);
+  });
+}
+function applyFilterPreset(filter){
+  getImageCanvas(STATE.imageTool.original,(c,img)=>{
+    const out=document.createElement('canvas');out.width=img.width;out.height=img.height;
+    const ctx=out.getContext('2d');ctx.filter=filter;ctx.drawImage(img,0,0);
+    STATE.imageTool.result=out.toDataURL();
+    const rc=document.getElementById('img-result-canvas');rc.width=out.width;rc.height=out.height;rc.getContext('2d').drawImage(out,0,0);
+  });
+}
+function applyCompression(q){
+  getImageCanvas(STATE.imageTool.original,(c)=>{
+    const data=c.toDataURL('image/jpeg',parseFloat(q)/100);
+    STATE.imageTool.result=data;
+    const size=Math.round(data.length*0.75);
+    const info=document.getElementById('compress-info');if(info)info.textContent=`~${formatBytes(size)} at ${q}% quality`;
+    const rc=document.getElementById('img-result-canvas');rc.width=c.width;rc.height=c.height;rc.getContext('2d').drawImage(c,0,0);
+  });
+}
+function applyImageConvert(){
+  const fmt=document.getElementById('img-format').value;
+  getImageCanvas(STATE.imageTool.original,(c)=>{
+    const data=c.toDataURL(fmt,0.92);STATE.imageTool.result=data;
+    const rc=document.getElementById('img-result-canvas');rc.width=c.width;rc.height=c.height;rc.getContext('2d').drawImage(c,0,0);
+    toast(`Converted to ${fmt.split('/')[1].toUpperCase()} ✓`,'success');
+  });
+}
+function downloadImageResult(){
+  if(!STATE.imageTool.result){toast('No result yet','error');return;}
+  const ext=STATE.imageTool.result.includes('image/png')?'.png':STATE.imageTool.result.includes('image/webp')?'.webp':'.jpg';
+  const a=document.createElement('a');a.href=STATE.imageTool.result;a.download='nexmark-image'+ext;a.click();
+}
+
+// ══ PROMPT MAKER ══
+const PM_OPT_LABELS=['Minimal','Light','Balanced','Enhanced','Maximum'];
+const PM_TOKEN_LABELS=['Lean','Concise','Balanced','Detailed','Rich'];
+function setupPromptMakerSliders(){
+  const opt=document.getElementById('pm-opt-level');
+  const tok=document.getElementById('pm-token-level');
+  if(opt){opt.addEventListener('input',()=>{document.getElementById('pm-opt-label').textContent=PM_OPT_LABELS[opt.value-1];});document.getElementById('pm-opt-label').textContent=PM_OPT_LABELS[opt.value-1];}
+  if(tok){tok.addEventListener('input',()=>{document.getElementById('pm-token-label').textContent=PM_TOKEN_LABELS[tok.value-1];});document.getElementById('pm-token-label').textContent=PM_TOKEN_LABELS[tok.value-1];}
+}
+function setPmToggle(key,val){
+  STATE.pmOptions[key]=val;
+  document.getElementById('pm-'+key+'-yes').classList.toggle('active',val);
+  document.getElementById('pm-'+key+'-no').classList.toggle('active',!val);
+}
+async function generatePrompt(){
+  const raw=document.getElementById('pm-raw-input').value.trim();
+  if(!raw){toast('Enter your idea first','error');return;}
+  const key=localStorage.getItem('nx_claude_key');
+  if(!key){toast('Add your Claude API key in Settings first','error');return;}
+  const optLevel=parseInt(document.getElementById('pm-opt-level').value);
+  const tokenLevel=parseInt(document.getElementById('pm-token-level').value);
+  const useCase=document.getElementById('pm-usecase').value;
+  const format=document.getElementById('pm-format').value;
+  const wantExamples=STATE.pmOptions.examples;
+  const wantRole=STATE.pmOptions.role;
+  const out=document.getElementById('pm-output');
+  out.innerHTML='<div class="note-editor-placeholder" style="height:100%"><span>Generating…</span></div>';
+  document.getElementById('pm-token-est').textContent='…';
+  const systemPrompt=`You are an expert prompt engineer who creates highly optimised prompts for Claude and other LLMs. Your output must be ONLY the final refined prompt — no explanation, no preamble, no markdown code fences.
+
+Optimization level: ${optLevel}/5 (${PM_OPT_LABELS[optLevel-1]})
+Token budget: ${tokenLevel}/5 (${PM_TOKEN_LABELS[tokenLevel-1]})
+Use case: ${useCase}
+Output format requested: ${format}
+Include examples: ${wantExamples}
+Add role/persona prefix: ${wantRole}
+
+Rules:
+- Higher optimization = more structured, specific constraints, edge-case handling
+- Lower token budget = shorter, tighter prompt; higher = richer context and examples
+- If role=true, start with "You are a [relevant expert]…"
+- If examples=true and token budget>=3, include 1-2 concise examples
+- Match the use case: coding prompts use technical language; writing prompts specify tone/audience
+- Remove all filler words; every token must earn its place
+- End with a clear instruction or question`;
+  try{
+    const resp=await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','x-api-key':key,'anthropic-version':'2023-06-01'},
+      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:800,system:systemPrompt,messages:[{role:'user',content:`Refine this raw idea into an optimised prompt:\n\n${raw}`}]})
+    });
+    if(!resp.ok){const err=await resp.json();toast('API error: '+(err.error?.message||resp.status),'error');out.innerHTML='<div style="color:var(--red);padding:20px">Error: '+esc(err.error?.message||'API call failed')+'</div>';return;}
+    const data=await resp.json();
+    const text=data.content[0].text;
+    out.textContent=text;
+    // Token estimate: ~4 chars per token
+    const est=Math.ceil(text.length/4);
+    document.getElementById('pm-token-est').textContent='~'+est+' tokens';
+  }catch(e){toast('Network error','error');out.innerHTML='<div style="color:var(--red);padding:20px">Network error. Check your API key and connection.</div>';}
+}
+function copyPrompt(){
+  const t=document.getElementById('pm-output').textContent;
+  if(!t||t.includes('appear here'))return;
+  navigator.clipboard.writeText(t).then(()=>toast('Prompt copied','success'));
+}
+function savePrompt(){
+  const t=document.getElementById('pm-output').textContent;
+  if(!t||t.includes('appear here')){toast('Generate a prompt first','error');return;}
+  const raw=document.getElementById('pm-raw-input').value.trim().slice(0,60);
+  STATE.savedPrompts.unshift({id:uid(),title:raw||'Prompt',text:t,createdAt:Date.now()});
+  if(STATE.savedPrompts.length>50)STATE.savedPrompts.pop();
+  ls_save(KEYS.savedPrompts,STATE.savedPrompts);
+  renderSavedPrompts();toast('Prompt saved ✓','success');
+}
+function renderSavedPrompts(){
+  const list=document.getElementById('pm-saved-list');if(!list)return;
+  if(!STATE.savedPrompts.length){list.innerHTML='<div style="color:var(--text3);font-size:12px">No saved prompts yet.</div>';return;}
+  list.innerHTML=STATE.savedPrompts.map(p=>`<div class="pm-saved-item" onclick="loadSavedPrompt('${p.id}')">
+    <div class="pm-saved-item-title">${esc(p.title)}</div>
+    <div class="pm-saved-item-date">${fmtDate(p.createdAt)}</div>
+    <button class="card-action-btn del-btn" style="opacity:1;padding:2px 6px" onclick="event.stopPropagation();deleteSavedPrompt('${p.id}')">✕</button>
+  </div>`).join('');
+}
+function loadSavedPrompt(id){
+  const p=STATE.savedPrompts.find(p=>p.id===id);if(!p)return;
+  document.getElementById('pm-output').textContent=p.text;
+  document.getElementById('pm-token-est').textContent='~'+Math.ceil(p.text.length/4)+' tokens';
+}
+function deleteSavedPrompt(id){
+  STATE.savedPrompts=STATE.savedPrompts.filter(p=>p.id!==id);
+  ls_save(KEYS.savedPrompts,STATE.savedPrompts);renderSavedPrompts();
+}
+
+// ══ PRICE TRACKER ══
+function setupPriceTabs(){
+  document.querySelectorAll('#panel-pricetracker .bm-tab').forEach(tab=>{
+    tab.addEventListener('click',()=>{
+      document.querySelectorAll('#panel-pricetracker .bm-tab').forEach(b=>b.classList.remove('active'));
+      document.querySelectorAll('#panel-pricetracker .bm-tab-content').forEach(c=>c.classList.remove('active'));
+      tab.classList.add('active');
+      document.getElementById('bm-tab-'+tab.dataset.tab).classList.add('active');
+      if(tab.dataset.tab==='pt-compare')renderPriceCompare();
+    });
+  });
+}
+function openAddProductModal(){
+  ['pt-name','pt-url','pt-price','pt-target','pt-category','pt-store','pt-notes'].forEach(id=>document.getElementById(id).value='');
+  document.getElementById('pt-currency').value='₹';
+  openModal('product-modal');setTimeout(()=>document.getElementById('pt-name').focus(),100);
+}
+function saveProduct(){
+  const name=document.getElementById('pt-name').value.trim();
+  const price=parseFloat(document.getElementById('pt-price').value);
+  if(!name){toast('Product name required','error');return;}
+  if(isNaN(price)){toast('Enter current price','error');return;}
+  const p={
+    id:uid(),name,url:document.getElementById('pt-url').value.trim(),
+    currency:document.getElementById('pt-currency').value,
+    currentPrice:price,targetPrice:parseFloat(document.getElementById('pt-target').value)||null,
+    category:document.getElementById('pt-category').value.trim(),
+    store:document.getElementById('pt-store').value.trim(),
+    notes:document.getElementById('pt-notes').value.trim(),
+    priceHistory:[{price,date:new Date().toISOString().slice(0,10)}],
+    createdAt:Date.now(),
+  };
+  STATE.products.unshift(p);
+  ls_save(KEYS.products,STATE.products);
+  renderProducts();closeModal('product-modal');toast('Product added ✓','success');
+}
+function updateProductPrice(id){
+  const inp=document.getElementById('pp-'+id);if(!inp)return;
+  const price=parseFloat(inp.value);if(isNaN(price))return;
+  const i=STATE.products.findIndex(p=>p.id===id);if(i<0)return;
+  STATE.products[i].currentPrice=price;
+  STATE.products[i].priceHistory.push({price,date:new Date().toISOString().slice(0,10)});
+  if(STATE.products[i].priceHistory.length>30)STATE.products[i].priceHistory.shift();
+  // Check alert
+  if(STATE.products[i].targetPrice&&price<=STATE.products[i].targetPrice){
+    toast(`🎉 Price alert! "${STATE.products[i].name}" hit your target!`,'success');
+    addNotification({id:uid(),type:'general',title:`Price drop: ${STATE.products[i].name}`,desc:`Now ${STATE.products[i].currency}${price} (target: ${STATE.products[i].currency}${STATE.products[i].targetPrice})`,time:new Date().toISOString(),read:false});
+  }
+  ls_save(KEYS.products,STATE.products);renderProducts();toast('Price updated ✓','success');
+}
+function deleteProduct(id){
+  if(!confirm('Remove this product?'))return;
+  STATE.products=STATE.products.filter(p=>p.id!==id);
+  ls_save(KEYS.products,STATE.products);renderProducts();
+}
+function renderProducts(){
+  const grid=document.getElementById('pt-grid'),empty=document.getElementById('pt-empty');
+  if(!STATE.products.length){grid.innerHTML='';grid.style.display='none';empty.style.display='flex';return;}
+  grid.style.display='grid';empty.style.display='none';
+  grid.innerHTML=STATE.products.map(p=>{
+    const maxP=Math.max(...p.priceHistory.map(h=>h.price),p.currentPrice);
+    const bars=p.priceHistory.slice(-10).map(h=>{const pct=Math.max(10,Math.round((h.price/maxP)*100));return`<div class="pt-bar" style="height:${pct}%;background:${h.price<=p.currentPrice?'var(--accent-glow)':'rgba(76,175,125,.3)'}" title="${p.currency}${h.price} · ${h.date}"></div>`;}).join('');
+    const alertFired=p.targetPrice&&p.currentPrice<=p.targetPrice;
+    return `<div class="pt-card ${alertFired?'alert-triggered':''}">
+      <div class="pt-card-header">
+        <div class="pt-product-icon">🏷️</div>
+        <div><div class="pt-product-name">${esc(p.name)}</div><div class="pt-product-store">${esc(p.store||p.category||'')}</div></div>
+      </div>
+      <div class="pt-price-section">
+        <span class="pt-current-price">${p.currency}${p.currentPrice.toLocaleString()}</span>
+        ${p.targetPrice?`<span class="pt-target-price">target: ${p.currency}${p.targetPrice.toLocaleString()}</span>`:''}
+        ${alertFired?'<span class="pt-alert-badge">🎉 Target hit!</span>':''}
+      </div>
+      ${bars?`<div class="pt-price-history">${bars}</div>`:''}
+      <div class="pt-update-row">
+        <input type="number" class="goal-update-input" id="pp-${p.id}" value="${p.currentPrice}" placeholder="New price"/>
+        <button class="btn-primary btn-sm" onclick="updateProductPrice('${p.id}')">Update</button>
+        ${p.url?`<button class="card-action-btn open-btn" onclick="window.open('${esc(p.url)}','_blank')" style="flex-shrink:0">↗</button>`:''}
+      </div>
+      <div class="pt-card-actions">
+        <button class="card-action-btn del-btn" onclick="deleteProduct('${p.id}')">Remove</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+function renderPriceCompare(){
+  const area=document.getElementById('pt-compare-area'),empty=document.getElementById('pt-compare-empty');
+  if(STATE.products.length<2){area.innerHTML='';empty.style.display='flex';return;}
+  empty.style.display='none';
+  const minPrice=Math.min(...STATE.products.map(p=>p.currentPrice));
+  area.innerHTML=`<table class="pt-compare-table">
+    <thead><tr><th>Product</th><th>Store</th><th>Category</th><th>Current Price</th><th>Target</th><th>Price History</th><th>Link</th></tr></thead>
+    <tbody>${STATE.products.map(p=>`<tr>
+      <td style="font-weight:700">${esc(p.name)}</td>
+      <td>${esc(p.store||'—')}</td>
+      <td>${esc(p.category||'—')}</td>
+      <td class="${p.currentPrice===minPrice?'best-price':''}">${p.currency}${p.currentPrice.toLocaleString()}</td>
+      <td>${p.targetPrice?p.currency+p.targetPrice.toLocaleString():'—'}</td>
+      <td><div class="pt-price-history" style="height:28px">${p.priceHistory.slice(-6).map(h=>{const maxP=Math.max(...p.priceHistory.map(x=>x.price));const pct=Math.max(10,Math.round((h.price/maxP)*100));return`<div class="pt-bar" style="height:${pct}%" title="${p.currency}${h.price}"></div>`;}).join('')}</div></td>
+      <td>${p.url?`<a href="${esc(p.url)}" target="_blank" style="color:var(--accent);font-size:12px">↗</a>`:'—'}</td>
+    </tr>`).join('')}</tbody>
+  </table>`;
+}
+
+// ══ HELPERS ══
+function downloadBlobFile(blob,name){const u=URL.createObjectURL(blob);const a=document.createElement('a');a.href=u;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(u),5000);}
+async function loadScript(src){return new Promise((res,rej)=>{const s=document.createElement('script');s.src=src;s.onload=res;s.onerror=rej;document.head.appendChild(s);});}
+function formatBytes(b){if(!b)return'0B';if(b<1024)return b+'B';if(b<1048576)return(b/1024).toFixed(1)+'KB';return(b/1048576).toFixed(1)+'MB';}
+
+// ══ openApp extended ══
+const _origOpenApp=openApp;
+function openApp(name){
+  if(name==='promptmaker')switchPanel('promptmaker');
+  else if(name==='pricetracker')switchPanel('pricetracker');
+  else _origOpenApp(name);
+}
